@@ -12,12 +12,10 @@ Syncs raid events from [Forga's Guild Calendar](https://github.com/ForgaNet/Forg
 ### Install
 
 ```bash
-git clone <repo-url>
-cd ForgasGuildCalendar-Sync
-pip install -e .
+pip install git+https://github.com/klopfer-hello/ForgasGuildCalender-Sync.git
 ```
 
-Place `client_secrets.json` in the project root.
+Place `client_secrets.json` in `%APPDATA%\ForgasGuildCalendar-Sync\`.
 
 ### Run
 
