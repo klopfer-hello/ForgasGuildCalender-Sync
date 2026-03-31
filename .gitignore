@@ -1,0 +1,13 @@
+.claude
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Google OAuth credentials
+client_secrets.json
+token.json
