@@ -199,7 +199,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     discord.clear_members_cache()
     discord.clear_channel_cache()
 
-    for event_id, evt in sorted(all_events.items(), key=lambda x: x[1].date):
+    for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
         existing = mapping.get(event_id)
         content_hash = compute_event_hash(evt)
         confirmed_names = sorted(
@@ -239,13 +239,10 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 result.skipped += 1
                 continue
             else:
-                # Content changed — update image and permissions
+                # Content changed — update image
                 old_confirmed = set((existing or {}).get("confirmed", []))
                 new_confirmed = set(confirmed_names)
                 newly_added = new_confirmed - old_confirmed
-
-                if newly_added:
-                    discord.update_channel_permissions(channel_id, evt)
 
                 if msg_ids and discord.message_exists(channel_id, msg_ids):
                     msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone)
@@ -282,7 +279,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     log.error("Discord channel delete error %s: %s", event_id, e)
             ids_to_remove.append(event_id)
 
-    # Clean up: delete channels for events that happened 12+ hours ago
+    # Clean up: delete channels for events that happened 24+ hours ago
     now = datetime.now(ZoneInfo(timezone))
     for event_id, info in mapping.items():
         if event_id in ids_to_remove:
@@ -292,7 +289,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             continue
         event_dt = _event_to_datetime(evt, timezone)
         hours_since = (now - event_dt).total_seconds() / 3600
-        if hours_since >= 12:
+        if hours_since >= 24:
             ch_id = info.get("channel_id")
             if ch_id:
                 try:

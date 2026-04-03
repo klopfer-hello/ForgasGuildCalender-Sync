@@ -68,47 +68,12 @@ class DiscordPoster:
     # -- Channel management --
 
     def create_event_channel(self, event: CalendarEvent) -> str:
-        """Create a private text channel for an event. Only confirmed members can see it."""
-        name = f"{event.date}-{_slugify(event.title)}"
+        """Create a public text channel for an event under the configured category."""
+        name = f"{event.date}-{event.time_str}-{_slugify(event.title)}"
         location = event.raid.replace("_", " ").title() if event.raid else ""
         topic = f"{event.summary_line()} | {event.date} {event.time_str}"
         if location:
             topic += f" | {location}"
-
-        # Build permission overwrites:
-        # - Deny @everyone from viewing
-        # - Allow the bot to manage the channel
-        # - Allow each confirmed member to view
-        overwrites = [
-            {
-                "id": self._guild_id,  # @everyone role ID = guild ID
-                "type": 0,  # role
-                "deny": "1024",  # VIEW_CHANNEL
-                "allow": "0",
-            },
-        ]
-
-        # Allow the bot itself
-        bot_id = self._get_bot_user_id()
-        if bot_id:
-            overwrites.append({
-                "id": bot_id,
-                "type": 1,  # member
-                "allow": str(1024 | 2048 | 16384 | 32768),  # VIEW + SEND + READ_HISTORY + MANAGE_MESSAGES
-                "deny": "0",
-            })
-
-        # Allow each confirmed participant that has a Discord account
-        confirmed = [p for p in event.participants if p.attendance == Attendance.CONFIRMED]
-        for p in confirmed:
-            user_id = self._find_member_id(p.name)
-            if user_id:
-                overwrites.append({
-                    "id": user_id,
-                    "type": 1,  # member
-                    "allow": str(1024 | 2048 | 16384),  # VIEW + SEND + READ_HISTORY
-                    "deny": "0",
-                })
 
         data = self._request(
             "POST",
@@ -118,30 +83,11 @@ class DiscordPoster:
                 "type": 0,  # GUILD_TEXT
                 "parent_id": self._category_id,
                 "topic": topic,
-                "permission_overwrites": overwrites,
             },
         )
         channel_id = data["id"]
-        log.info("Discord: created private channel #%s (%s) for %s", name, channel_id, event.title)
+        log.info("Discord: created channel #%s (%s) for %s", name, channel_id, event.title)
         return channel_id
-
-    def update_channel_permissions(self, channel_id: str, event: CalendarEvent):
-        """Update channel permissions when confirmed members change."""
-        confirmed = [p for p in event.participants if p.attendance == Attendance.CONFIRMED]
-        for p in confirmed:
-            user_id = self._find_member_id(p.name)
-            if user_id:
-                try:
-                    self._request(
-                        "PUT",
-                        f"/channels/{channel_id}/permissions/{user_id}",
-                        json={
-                            "type": 1,  # member
-                            "allow": str(1024 | 2048 | 16384),  # VIEW + SEND + READ_HISTORY
-                        },
-                    )
-                except requests.HTTPError as e:
-                    log.warning("Discord: could not set permissions for %s: %s", p.name, e)
 
     def delete_channel(self, channel_id: str):
         """Delete a channel."""
