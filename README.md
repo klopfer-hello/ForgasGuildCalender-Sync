@@ -1,13 +1,15 @@
 # FGC Calendar Sync
 
-Syncs raid events from [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) (WoW addon) to Google Calendar and Discord. Runs as a Windows system tray app or headless CLI (Linux/cron).
+Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) WoW addon. Reads raid/event data from the addon's SavedVariables and offers two independent sync features — use either or both:
 
-## Features
+| Feature | What it does |
+|---------|-------------|
+| **Discord Bot** | Creates per-event channels with rendered roster images, pings confirmed members, auto-deletes channels 24h after the raid |
+| **Google Calendar** | Syncs raids you're signed up for to your personal Google Calendar |
 
-- **Discord bot**: creates per-event channels with roster images, pings confirmed members
-- **Google Calendar sync** (optional): creates calendar events for raids you're signed up for
-- **Auto-sync**: watches SavedVariables for changes + polls every 5 minutes
-- **Multi-client safe**: multiple instances can share the same Discord channel
+Both features are optional — configure only what you need.
+
+Runs as a **Windows system tray app** (auto-sync on file changes + 5-minute polling) or as a **headless CLI** for Linux/cron.
 
 ## Installation
 
@@ -31,7 +33,7 @@ Then run:
 fgc-sync
 ```
 
-On first launch, a setup wizard guides you through selecting your WoW directory, logging into Google (optional), and configuring Discord.
+On first launch, a setup wizard guides you through selecting your WoW directory and guild. Configure Discord and/or Google Calendar in Settings afterwards.
 
 ### Linux — pip install (headless CLI)
 
@@ -48,20 +50,19 @@ Create your config manually at `~/.config/ForgasGuildCalendar-Sync/config.json`:
   "wow_path": "/path/to/wow",
   "account_folder": "YOUR_ACCOUNT_ID",
   "guild_key": "Realm-Guild Name",
-  "discord_bot_token": "your-bot-token",
-  "discord_guild_id": "your-server-id",
-  "discord_category_id": "your-category-id",
   "timezone": "Europe/Berlin"
 }
 ```
 
-Run once:
+Add Discord and/or Google Calendar settings as needed (see setup sections below).
+
+Run a single sync cycle:
 
 ```bash
 fgc-sync-cli
 ```
 
-Or with Discord only (no Google Calendar):
+Or Discord only (skip Google Calendar):
 
 ```bash
 fgc-sync-cli --discord-only
@@ -71,17 +72,17 @@ fgc-sync-cli --discord-only
 
 Sync every 5 minutes:
 
-```bash
-crontab -e
+```
+*/5 * * * * /path/to/fgc-sync-cli
 ```
 
-Add:
+## Feature Setup
 
-```
-*/5 * * * * /path/to/fgc-sync-cli --discord-only
-```
+### Discord Bot
 
-## Discord Bot Setup
+Creates a channel per raid under a Discord category, posts a rendered roster image, and pings confirmed members. Channels are automatically deleted 24 hours after the raid.
+
+**Setup:**
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications), create an application
 2. **Bot** tab: create bot, copy token, enable **Server Members Intent**
@@ -90,23 +91,36 @@ Add:
 5. Create a **category** in Discord (e.g. "Raids")
 6. In the category's permission settings, give the bot role **Manage Channels** for that category only — this prevents the bot from affecting other channels
 7. Right-click the category → **Copy Category ID** (requires Developer Mode: User Settings → Advanced)
-8. Enter Bot Token, Server ID, and Category ID in the app settings (tray icon → Settings) or `config.json`
+8. Enter Bot Token, Server ID, and Category ID in the app settings (tray icon → Settings) or `config.json`:
 
-## Google Calendar Setup (optional)
+```json
+{
+  "discord_bot_token": "your-bot-token",
+  "discord_guild_id": "your-server-id",
+  "discord_category_id": "your-category-id"
+}
+```
+
+### Google Calendar
+
+Syncs raids where your character is signed up or confirmed to a personal Google Calendar. Events are created, updated, and deleted automatically.
+
+**Setup:**
 
 1. Create a [Google Cloud project](https://console.cloud.google.com/) with the **Google Calendar API** enabled
 2. Create an OAuth **Desktop** client ID and download `client_secrets.json`
 3. Place `client_secrets.json` in:
    - Windows: `%APPDATA%\ForgasGuildCalendar-Sync\`
    - Linux: `~/.config/ForgasGuildCalendar-Sync/`
-4. The app will prompt you to log in on first sync
+4. Add `calendar_id` to your config or select a calendar in the setup wizard
+5. The app will prompt you to log in with Google on first sync
 
 ## How it works
 
 1. Reads `FGC_DB` from WoW's SavedVariables file
-2. Extracts future events with confirmed raid rosters (group assignments)
-3. **Discord**: creates a channel per event with a rendered roster image, pings confirmed members
-4. **Google Calendar** (optional): creates/updates/deletes calendar events for raids you're signed up for
+2. Extracts future events from the guild calendar
+3. **Discord** (if configured): for events with a confirmed roster (group assignments) within 7 days — creates a channel, posts a roster image, pings confirmed members
+4. **Google Calendar** (if configured): for events where your character is signed up — creates/updates/deletes calendar entries
 5. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
 
 ## Disclaimer
