@@ -183,7 +183,7 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
 
 
 def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
-    """Sync all future guild events to Discord as embeds (guild-wide, not personal)."""
+    """Sync guild events to Discord — one private channel per event."""
     result = SyncResult()
     timezone = config.get("timezone", "Europe/Berlin")
 
@@ -197,7 +197,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     mapping: dict = config.get("discord_message_mapping", {})
     discord.clear_members_cache()
-    discord.clear_bot_messages_cache()
+    discord.clear_channel_cache()
 
     for event_id, evt in sorted(all_events.items(), key=lambda x: x[1].date):
         existing = mapping.get(event_id)
@@ -207,51 +207,60 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         )
 
         try:
-            # If not in local mapping, check if another client already posted it
+            # Check if another client already created a channel for this event
             if existing is None:
-                remote = discord.find_existing_event(event_id)
-                if remote and remote.get("hash") == content_hash:
-                    # Another client already posted and it's up to date
-                    mapping[event_id] = {
+                remote = discord.find_existing_channel(event_id)
+                if remote:
+                    existing = {
+                        "channel_id": remote["channel_id"],
                         "message_ids": remote,
-                        "revision": evt.revision,
-                        "confirmed": confirmed_names,
                     }
-                    result.skipped += 1
-                    log.info("Discord: adopted existing message for %s", evt.title)
-                    continue
-                elif remote:
-                    # Another client posted but content changed — update it
-                    existing = {"message_ids": remote}
+                    if remote.get("hash") == content_hash:
+                        mapping[event_id] = {
+                            "channel_id": remote["channel_id"],
+                            "message_ids": remote,
+                            "confirmed": confirmed_names,
+                        }
+                        result.skipped += 1
+                        log.info("Discord: adopted existing channel for %s", evt.title)
+                        continue
 
-            msg_ids = (existing or {}).get("message_ids", existing.get("message_id", {})) if existing else None
+            channel_id = (existing or {}).get("channel_id")
+            msg_ids = (existing or {}).get("message_ids")
 
-            if msg_ids is None:
-                # New event, no existing message
-                msg_ids = discord.post_event(evt, timezone)
+            if channel_id is None:
+                # New event — create channel, post image, ping all confirmed
+                channel_id = discord.create_event_channel(evt)
+                msg_ids = discord.post_event(channel_id, evt, timezone)
+                discord.ping_members(channel_id, set(confirmed_names), "Confirmed")
                 result.created += 1
-            elif existing and existing.get("message_ids", {}).get("hash") == content_hash:
-                # Hash matches — already up to date (same client or another)
+            elif msg_ids and msg_ids.get("hash") == content_hash:
+                # Already up to date
                 result.skipped += 1
                 continue
             else:
-                # Content changed — update
+                # Content changed — update image and permissions
                 old_confirmed = set((existing or {}).get("confirmed", []))
                 new_confirmed = set(confirmed_names)
-                has_new_confirmed = bool(new_confirmed - old_confirmed)
+                newly_added = new_confirmed - old_confirmed
 
-                if discord.message_exists(msg_ids):
-                    msg_ids = discord.update_event(msg_ids, evt, timezone)
-                    if has_new_confirmed:
-                        msg_ids = discord.repost_mentions(msg_ids, evt)
+                if newly_added:
+                    discord.update_channel_permissions(channel_id, evt)
+
+                if msg_ids and discord.message_exists(channel_id, msg_ids):
+                    msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone)
                     result.updated += 1
                 else:
-                    msg_ids = discord.post_event(evt, timezone)
-                    result.created += 1
+                    msg_ids = discord.post_event(channel_id, evt, timezone)
+                    result.updated += 1
+
+                if newly_added:
+                    discord.ping_members(channel_id, newly_added, "Newly confirmed")
+                    result.updated += 1
 
             mapping[event_id] = {
+                "channel_id": channel_id,
                 "message_ids": msg_ids,
-                "revision": evt.revision,
                 "confirmed": confirmed_names,
             }
 
@@ -259,15 +268,39 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             result.errors.append(f"Discord error for {evt.title}: {e}")
             log.error("Discord error for %s: %s", evt.title, e)
 
+    # Clean up: delete channels for events no longer active
     ids_to_remove = []
     for event_id, info in mapping.items():
         if event_id not in all_events or event_id in deleted_ids:
-            try:
-                discord.delete_event(info.get("message_ids", info.get("message_id", {})))
-                result.deleted += 1
-            except Exception as e:
-                result.errors.append(f"Discord delete error {event_id}: {e}")
-                log.error("Discord delete error %s: %s", event_id, e)
+            ch_id = info.get("channel_id")
+            if ch_id:
+                try:
+                    discord.delete_channel(ch_id)
+                    result.deleted += 1
+                except Exception as e:
+                    result.errors.append(f"Discord channel delete error {event_id}: {e}")
+                    log.error("Discord channel delete error %s: %s", event_id, e)
+            ids_to_remove.append(event_id)
+
+    # Clean up: delete channels for events that happened 12+ hours ago
+    now = datetime.now(ZoneInfo(timezone))
+    for event_id, info in mapping.items():
+        if event_id in ids_to_remove:
+            continue
+        evt = all_events.get(event_id)
+        if not evt:
+            continue
+        event_dt = _event_to_datetime(evt, timezone)
+        hours_since = (now - event_dt).total_seconds() / 3600
+        if hours_since >= 12:
+            ch_id = info.get("channel_id")
+            if ch_id:
+                try:
+                    discord.delete_channel(ch_id)
+                    result.deleted += 1
+                    log.info("Discord: deleted expired channel for %s", evt.title)
+                except Exception as e:
+                    log.error("Discord expired channel delete error: %s", e)
             ids_to_remove.append(event_id)
 
     for eid in ids_to_remove:

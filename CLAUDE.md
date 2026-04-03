@@ -79,15 +79,18 @@ src/fgc_sync/
 ### Discord Sync Logic (`sync_engine.py` → `execute_discord_sync`)
 
 Runs after Google Calendar sync on every sync cycle. Uses `discord_message_mapping` in config.
-Only posts events within the next 7 days that have a raid roster (group assignments).
+Only posts events within the next 7 days that have a confirmed roster (group assignments).
 
 1. Collects all future guild events (not filtered by personal participation)
 2. For each event:
-   - **Not in mapping** → post roster image + mention reply
-   - **In mapping, revision changed** → edit image in place; if new confirmed members, repost only the mention reply (fresh pings)
-   - **In mapping, revision same, message deleted externally** → re-post
-3. Events in mapping but not in WoW (or outside 7-day window) → delete Discord messages
-4. Persist `discord_message_mapping` to config
+   - **Not in mapping** → create private channel, post roster image, ping all confirmed members
+   - **In mapping, content hash changed, new confirmed** → update image, update channel permissions, ping only newly confirmed members
+   - **In mapping, content hash changed, no new confirmed** → update image only
+   - **In mapping, hash unchanged** → skip
+3. Events no longer in WoW (or outside 7-day window) → delete channel
+4. Events that happened 12+ hours ago → delete channel
+5. Multi-client safe: content hash embedded in image filename, channels scanned before creating
+6. Persist `discord_message_mapping` to config
 
 ### Discord Roster Images (`roster_image.py`)
 
@@ -96,11 +99,31 @@ Only posts events within the next 7 days that have a raid roster (group assignme
 - **Groups**: confirmed participants in their assigned raid groups (1–8), with role icons (shield/cross/sword) and class icons
 - **Sections**: Signed, Bench (no Declined)
 - **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
-- **Mentions**: posted as a separate reply below the image
+
+### Discord Per-Event Channels
+
+Each event with a confirmed roster gets its own private text channel under a category:
+- **Channel name**: `2026-04-03-gruul-maggi-mit-forga`
+- **Topic**: event summary, date, time, location
+- **Visibility**: hidden from `@everyone`, only confirmed participants + the bot can see it
+- **Pings**: one-off notification messages — "Confirmed:" on creation, "Newly confirmed:" on updates
+- **Cleanup**: channels are deleted 12 hours after the event start time
+- When new members are confirmed, they automatically gain channel access and get pinged
 
 ### Discord Member Matching
 
 Members are matched by checking if the WoW character name is a **case-insensitive substring** of the Discord member's server nickname, global display name, or username. The bot requires the **Server Members Intent** enabled in the Discord Developer Portal.
+
+### Discord Bot Setup
+
+1. Create a Discord application at discord.com/developers
+2. Bot tab: create bot, copy token, enable **Server Members Intent**
+3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Messages**, **Manage Channels**, **Manage Roles**, **Read Message History**
+4. Invite bot to your server
+5. Create a **category** in Discord (e.g. "Raids")
+6. In the category's permission settings, give the bot role **Manage Channels** and **Manage Roles** for that category only — this scopes the bot's permissions to that category, preventing it from affecting other channels
+7. Right-click the category → Copy Category ID
+8. In the app's Settings, fill in Bot Token, Server ID, and Category ID
 
 ### Auto-sync Triggers
 
@@ -141,8 +164,8 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 | `event_mapping` | `{fgc_eventId: {google_id, revision, title}}` |
 | `discord_bot_token` | Discord bot token (optional) |
 | `discord_guild_id` | Discord server ID (optional) |
-| `discord_channel_id` | Target channel ID (optional) |
-| `discord_message_mapping` | `{fgc_eventId: {message_ids: {image_id, mention_id?}, revision, confirmed[]}}` |
+| `discord_category_id` | Category ID for raid channels (optional) |
+| `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids: {image_id, mention_id?, hash}, confirmed[]}}` |
 
 ### Credential Files
 

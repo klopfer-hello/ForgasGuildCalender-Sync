@@ -98,9 +98,9 @@ class SettingsDialog(QDialog):
         self._discord_guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
         form.addRow("Server ID:", self._discord_guild_edit)
 
-        self._discord_channel_edit = QLineEdit(self._config.get("discord_channel_id", ""))
-        self._discord_channel_edit.setPlaceholderText("Right-click channel → Copy Channel ID")
-        form.addRow("Channel ID:", self._discord_channel_edit)
+        self._discord_category_edit = QLineEdit(self._config.get("discord_category_id", ""))
+        self._discord_category_edit.setPlaceholderText("Right-click category → Copy Category ID")
+        form.addRow("Category ID:", self._discord_category_edit)
 
         layout.addLayout(form)
 
@@ -187,7 +187,7 @@ class SettingsDialog(QDialog):
             self._config.set("calendar_id", cal_id)
         self._config.set("discord_bot_token", self._discord_token_edit.text().strip())
         self._config.set("discord_guild_id", self._discord_guild_edit.text().strip())
-        self._config.set("discord_channel_id", self._discord_channel_edit.text().strip())
+        self._config.set("discord_category_id", self._discord_category_edit.text().strip())
         self.accept()
 
     def showEvent(self, event):

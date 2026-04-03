@@ -58,17 +58,17 @@ def main():
 
     # Discord sync
     token = config.get("discord_bot_token", "")
-    channel = config.get("discord_channel_id", "")
+    category = config.get("discord_category_id", "")
     guild = config.get("discord_guild_id", "")
-    if token and channel and guild:
-        discord = DiscordPoster(token, channel, guild)
+    if token and category and guild:
+        discord = DiscordPoster(token, category, guild)
         result = execute_discord_sync(config, discord)
         log.info("Discord: %s", result)
         if result.errors:
             for err in result.errors:
                 log.error("  %s", err)
     elif args.discord_only:
-        log.error("Discord not configured. Set discord_bot_token, discord_channel_id, discord_guild_id in config.")
+        log.error("Discord not configured. Set discord_bot_token, discord_category_id, discord_guild_id in config.")
         sys.exit(1)
 
 

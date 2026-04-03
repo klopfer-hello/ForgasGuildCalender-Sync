@@ -37,10 +37,10 @@ class AppController:
 
     def _create_discord_poster(self) -> DiscordPoster | None:
         token = self._config.get("discord_bot_token", "")
-        channel = self._config.get("discord_channel_id", "")
+        category = self._config.get("discord_category_id", "")
         guild = self._config.get("discord_guild_id", "")
-        if token and channel and guild:
-            return DiscordPoster(token, channel, guild)
+        if token and category and guild:
+            return DiscordPoster(token, category, guild)
         return None
 
     def start(self):
