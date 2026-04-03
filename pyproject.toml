@@ -8,7 +8,6 @@ version = "1.1.0"
 description = "Sync Forga's Guild Calendar (WoW addon) events to Google Calendar"
 requires-python = ">=3.12"
 dependencies = [
-    "PySide6>=6.6",
     "google-api-python-client>=2.100",
     "google-auth-oauthlib>=1.1",
     "google-auth-httplib2>=0.2",
@@ -18,6 +17,12 @@ dependencies = [
     "slpp>=1.2",
     "tzdata>=2024.1",
 ]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+
+[project.scripts]
+fgc-sync-cli = "fgc_sync.cli:main"
 
 [project.gui-scripts]
 fgc-sync = "fgc_sync.app:main"

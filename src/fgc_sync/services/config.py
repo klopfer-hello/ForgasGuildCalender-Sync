@@ -11,7 +11,10 @@ SAVED_VARIABLES_FILENAME = "ForgasGuildCalendar.lua"
 
 
 def _app_data_dir() -> Path:
-    base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     app_dir = base / APP_NAME
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir

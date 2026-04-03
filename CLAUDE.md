@@ -7,9 +7,9 @@ System tray companion tool for the **Forga's Guild Calendar** WoW addon. Reads r
 ## Environment
 
 - Python >= 3.12 (tested on 3.14)
-- PySide6 for UI (system tray + dialogs)
-- Windows-only (system tray, Windows startup integration, registry-based theme detection)
-- Installed via `pip install -e .` — entry point: `fgc-sync` (gui-scripts, uses `pythonw.exe`)
+- **Windows GUI mode**: PySide6 system tray + dialogs, entry point `fgc-sync`
+- **Linux/headless CLI mode**: no Qt required, entry point `fgc-sync-cli`, designed for cron
+- Install: `pip install -e .` (CLI only) or `pip install -e ".[gui]"` (with PySide6)
 
 ## Source Data
 
@@ -50,8 +50,9 @@ src/fgc_sync/
 │   ├── settings_dialog.py   #   Post-setup config changes
 │   └── preview_dialog.py    #   Sync preview table
 │
-├── app.py           # QApplication bootstrap
-└── __main__.py      # python -m fgc_sync
+├── app.py           # QApplication bootstrap (Windows GUI)
+├── cli.py           # Headless CLI entry point (Linux/cron)
+└── __main__.py      # python -m fgc_sync (auto-detects mode)
 ```
 
 ### Dependency Rules
@@ -106,6 +107,16 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 - **File watcher**: watchdog monitors SavedVariables directory, 2s debounce
 - **Poll timer**: every 5 minutes as fallback
 - **Manual**: "Sync Now" from tray menu
+
+### Linux / Headless CLI
+
+- Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
+- Runs a single sync cycle and exits — designed for cron
+- No Qt/PySide6 dependency required
+- `--discord-only` flag to skip Google Calendar sync
+- Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
+- Initial setup: create config manually or run GUI on Windows first, copy config.json
+- Cron example: `*/5 * * * * /path/to/fgc-sync-cli`
 
 ### Google Calendar Events
 

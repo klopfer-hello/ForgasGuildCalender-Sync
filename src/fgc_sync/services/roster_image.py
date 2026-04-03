@@ -60,11 +60,31 @@ _role_icon_cache: dict[str, Image.Image] = {}
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    try:
-        path = "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf"
-        return ImageFont.truetype(path, size)
-    except OSError:
-        return ImageFont.load_default()
+    import os
+    candidates = []
+    if os.name == "nt":
+        candidates = [
+            "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        ]
+    else:
+        if bold:
+            candidates = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+            ]
+        else:
+            candidates = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def _get_class_icon(class_code: str) -> Image.Image | None:
