@@ -35,3 +35,7 @@ Right-click the tray icon and enable **"Start with Windows"**.
 2. Filters to events where your character is signed up or confirmed
 3. Creates/updates/deletes Google Calendar events to match
 4. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
+
+## Disclaimer
+
+This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
