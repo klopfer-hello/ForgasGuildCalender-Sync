@@ -33,6 +33,8 @@ src/fgc_sync/
 ├── services/        # Business logic (no UI, no Qt)
 │   ├── config.py    #   JSON config in %APPDATA%
 │   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
+│   ├── discord_poster.py     #   Discord REST API (images + pings)
+│   ├── roster_image.py      #   Pillow-based roster card renderer
 │   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
 │   ├── sync_engine.py       #   Diff & sync (create/update/delete)
 │   └── file_watcher.py      #   Watchdog observer with debounce
@@ -73,6 +75,32 @@ src/fgc_sync/
 4. Events in mapping but not in WoW (or in `deletedEvents`) → delete from Google Calendar
 5. Persist updated mapping to config
 
+### Discord Sync Logic (`sync_engine.py` → `execute_discord_sync`)
+
+Runs after Google Calendar sync on every sync cycle. Uses `discord_message_mapping` in config.
+Only posts events within the next 7 days that have a raid roster (group assignments).
+
+1. Collects all future guild events (not filtered by personal participation)
+2. For each event:
+   - **Not in mapping** → post roster image + mention reply
+   - **In mapping, revision changed** → edit image in place; if new confirmed members, repost only the mention reply (fresh pings)
+   - **In mapping, revision same, message deleted externally** → re-post
+3. Events in mapping but not in WoW (or outside 7-day window) → delete Discord messages
+4. Persist `discord_message_mapping` to config
+
+### Discord Roster Images (`roster_image.py`)
+
+- Rendered via Pillow at 2x resolution
+- **Header**: day of week, date, time, event title, location, participant counts
+- **Groups**: confirmed participants in their assigned raid groups (1–8), with role icons (shield/cross/sword) and class icons
+- **Sections**: Signed, Bench (no Declined)
+- **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
+- **Mentions**: posted as a separate reply below the image
+
+### Discord Member Matching
+
+Members are matched by checking if the WoW character name is a **case-insensitive substring** of the Discord member's server nickname, global display name, or username. The bot requires the **Server Members Intent** enabled in the Discord Developer Portal.
+
 ### Auto-sync Triggers
 
 - **File watcher**: watchdog monitors SavedVariables directory, 2s debounce
@@ -100,6 +128,10 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 | `timezone` | IANA timezone (default: `Europe/Berlin`) |
 | `default_duration_hours` | Event duration (default: 3) |
 | `event_mapping` | `{fgc_eventId: {google_id, revision, title}}` |
+| `discord_bot_token` | Discord bot token (optional) |
+| `discord_guild_id` | Discord server ID (optional) |
+| `discord_channel_id` | Target channel ID (optional) |
+| `discord_message_mapping` | `{fgc_eventId: {message_ids: {image_id, mention_id?}, revision, confirmed[]}}` |
 
 ### Credential Files
 

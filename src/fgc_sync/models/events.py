@@ -14,6 +14,9 @@ class Participant:
     class_code: str
     role_code: str
     comment: str = ""
+    group: int = 0
+    slot: int = 0
+    item_level: float = 0.0
 
 
 @dataclass

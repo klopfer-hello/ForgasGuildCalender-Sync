@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from fgc_sync.controllers.sync_controller import SyncController
 from fgc_sync.models import SyncResult
 from fgc_sync.services.config import Config
+from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.file_watcher import FileWatcher
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.views.preview_dialog import PreviewDialog
@@ -28,10 +29,19 @@ class AppController:
         self._gcal = GoogleCalendarClient(
             config.token_path, config.client_secrets_path
         )
-        self._sync = SyncController(config, self._gcal)
+        self._discord = self._create_discord_poster()
+        self._sync = SyncController(config, self._gcal, self._discord)
         self._tray = TrayIcon()
         self._watcher: FileWatcher | None = None
         self._poll_timer: QTimer | None = None
+
+    def _create_discord_poster(self) -> DiscordPoster | None:
+        token = self._config.get("discord_bot_token", "")
+        channel = self._config.get("discord_channel_id", "")
+        guild = self._config.get("discord_guild_id", "")
+        if token and channel and guild:
+            return DiscordPoster(token, channel, guild)
+        return None
 
     def start(self):
         self._gcal.load_credentials()
@@ -94,6 +104,8 @@ class AppController:
     def _show_settings(self):
         dialog = SettingsDialog(self._config, self._gcal)
         if dialog.exec():
+            self._discord = self._create_discord_poster()
+            self._sync._discord = self._discord
             self._start_watcher()
             self._sync.request_sync()
 

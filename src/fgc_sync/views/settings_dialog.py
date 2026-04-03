@@ -85,6 +85,23 @@ class SettingsDialog(QDialog):
         google_row.addWidget(logout_btn)
         form.addRow("Google:", google_row)
 
+        # --- Discord integration (optional) ---
+        form.addRow(QLabel(""))  # spacer
+        form.addRow(QLabel("Discord Integration (optional)"))
+
+        self._discord_token_edit = QLineEdit(self._config.get("discord_bot_token", ""))
+        self._discord_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._discord_token_edit.setPlaceholderText("Bot token from Discord Developer Portal")
+        form.addRow("Bot Token:", self._discord_token_edit)
+
+        self._discord_guild_edit = QLineEdit(self._config.get("discord_guild_id", ""))
+        self._discord_guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
+        form.addRow("Server ID:", self._discord_guild_edit)
+
+        self._discord_channel_edit = QLineEdit(self._config.get("discord_channel_id", ""))
+        self._discord_channel_edit.setPlaceholderText("Right-click channel → Copy Channel ID")
+        form.addRow("Channel ID:", self._discord_channel_edit)
+
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -168,6 +185,9 @@ class SettingsDialog(QDialog):
         self._config.set("default_duration_hours", self._duration_spin.value())
         if cal_id := self._calendar_combo.currentData():
             self._config.set("calendar_id", cal_id)
+        self._config.set("discord_bot_token", self._discord_token_edit.text().strip())
+        self._config.set("discord_guild_id", self._discord_guild_edit.text().strip())
+        self._config.set("discord_channel_id", self._discord_channel_edit.text().strip())
         self.accept()
 
     def showEvent(self, event):

@@ -118,6 +118,9 @@ def _parse_participants(raw: dict) -> list[Participant]:
                 class_code=pdata.get("classCode", ""),
                 role_code=pdata.get("roleCode", ""),
                 comment=pdata.get("comment", ""),
+                group=int(pdata.get("group", 0)),
+                slot=int(pdata.get("slot", 0)),
+                item_level=float(pdata.get("itemLevel", 0)),
             )
         )
     return participants

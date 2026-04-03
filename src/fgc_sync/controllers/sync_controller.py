@@ -8,8 +8,9 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from fgc_sync.models import SyncPlan, SyncResult
 from fgc_sync.services.config import Config
+from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
-from fgc_sync.services.sync_engine import compute_sync_plan, execute_sync
+from fgc_sync.services.sync_engine import compute_sync_plan, execute_discord_sync, execute_sync
 
 log = logging.getLogger(__name__)
 
@@ -17,16 +18,30 @@ log = logging.getLogger(__name__)
 class _SyncWorker(QObject):
     finished = Signal(object)
 
-    def __init__(self, config: Config, gcal: GoogleCalendarClient):
+    def __init__(self, config: Config, gcal: GoogleCalendarClient, discord: DiscordPoster | None = None):
         super().__init__()
         self._config = config
         self._gcal = gcal
+        self._discord = discord
 
     def run(self):
         try:
             result = execute_sync(self._config, self._gcal)
         except Exception as e:
             result = SyncResult(errors=[str(e)])
+
+        if self._discord and self._discord.is_configured:
+            try:
+                discord_result = execute_discord_sync(self._config, self._discord)
+                result.created += discord_result.created
+                result.updated += discord_result.updated
+                result.deleted += discord_result.deleted
+                result.skipped += discord_result.skipped
+                result.errors.extend(discord_result.errors)
+            except Exception as e:
+                result.errors.append(f"Discord sync failed: {e}")
+                log.error("Discord sync failed: %s", e)
+
         self.finished.emit(result)
 
 
@@ -35,10 +50,11 @@ class SyncController(QObject):
 
     sync_completed = Signal(object)  # SyncResult
 
-    def __init__(self, config: Config, gcal: GoogleCalendarClient, parent=None):
+    def __init__(self, config: Config, gcal: GoogleCalendarClient, discord: DiscordPoster | None = None, parent=None):
         super().__init__(parent)
         self._config = config
         self._gcal = gcal
+        self._discord = discord
         self._thread: QThread | None = None
         self._worker: _SyncWorker | None = None
 
@@ -60,7 +76,7 @@ class SyncController(QObject):
                 return
 
         self._thread = QThread()
-        self._worker = _SyncWorker(self._config, self._gcal)
+        self._worker = _SyncWorker(self._config, self._gcal, self._discord)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._on_finished)

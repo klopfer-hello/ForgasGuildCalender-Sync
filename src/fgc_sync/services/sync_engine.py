@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,7 @@ from fgc_sync.models import (
     SyncResult,
 )
 from fgc_sync.services.config import Config
+from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import (
     extract_events,
@@ -181,6 +182,94 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
     return result
 
 
+def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
+    """Sync all future guild events to Discord as embeds (guild-wide, not personal)."""
+    result = SyncResult()
+    timezone = config.get("timezone", "Europe/Berlin")
+
+    if not discord.is_configured:
+        return result
+
+    all_events, deleted_ids, errors = _collect_all_future_events(config)
+    result.errors.extend(errors)
+    if errors:
+        return result
+
+    mapping: dict = config.get("discord_message_mapping", {})
+    discord.clear_members_cache()
+
+    for event_id, evt in all_events.items():
+        existing = mapping.get(event_id)
+        confirmed_names = sorted(
+            p.name for p in evt.participants if p.attendance == Attendance.CONFIRMED
+        )
+
+        try:
+            if existing is None:
+                msg_ids = discord.post_event(evt, timezone)
+                mapping[event_id] = {
+                    "message_ids": msg_ids,
+                    "revision": evt.revision,
+                    "confirmed": confirmed_names,
+                }
+                result.created += 1
+
+            elif existing.get("revision") != evt.revision:
+                old_confirmed = set(existing.get("confirmed", []))
+                new_confirmed = set(confirmed_names)
+                has_new_confirmed = bool(new_confirmed - old_confirmed)
+                msg_ids = existing.get("message_ids", existing.get("message_id", {}))
+
+                if discord.message_exists(msg_ids):
+                    # Always edit the image in place
+                    msg_ids = discord.update_event(msg_ids, evt, timezone)
+                    if has_new_confirmed:
+                        # Repost only the mention reply for fresh pings
+                        msg_ids = discord.repost_mentions(msg_ids, evt)
+                    result.updated += 1
+                else:
+                    msg_ids = discord.post_event(evt, timezone)
+                    result.created += 1
+
+                mapping[event_id] = {
+                    "message_ids": msg_ids,
+                    "revision": evt.revision,
+                    "confirmed": confirmed_names,
+                }
+
+            elif not discord.message_exists(existing.get("message_ids", existing.get("message_id", {}))):
+                msg_ids = discord.post_event(evt, timezone)
+                mapping[event_id] = {
+                    "message_ids": msg_ids,
+                    "revision": evt.revision,
+                    "confirmed": confirmed_names,
+                }
+                result.created += 1
+            else:
+                result.skipped += 1
+
+        except Exception as e:
+            result.errors.append(f"Discord error for {evt.title}: {e}")
+            log.error("Discord error for %s: %s", evt.title, e)
+
+    ids_to_remove = []
+    for event_id, info in mapping.items():
+        if event_id not in all_events or event_id in deleted_ids:
+            try:
+                discord.delete_event(info.get("message_ids", info.get("message_id", {})))
+                result.deleted += 1
+            except Exception as e:
+                result.errors.append(f"Discord delete error {event_id}: {e}")
+                log.error("Discord delete error %s: %s", event_id, e)
+            ids_to_remove.append(event_id)
+
+    for eid in ids_to_remove:
+        mapping.pop(eid, None)
+
+    config.set("discord_message_mapping", mapping)
+    return result
+
+
 # --- Private helpers ---
 
 def _collect_syncable_events(
@@ -220,6 +309,49 @@ def _collect_syncable_events(
         char_name = _find_participating_character(evt, char_names)
         if char_name:
             result[evt.event_id] = (evt, char_name)
+
+    return result, deleted_ids, errors
+
+
+def _collect_all_future_events(
+    config: Config,
+) -> tuple[dict[str, CalendarEvent], set[str], list[str]]:
+    """Return all future events for the guild, regardless of participation."""
+    errors: list[str] = []
+    sv_path = config.saved_variables_path
+    if not sv_path or not sv_path.exists():
+        errors.append(f"SavedVariables not found: {sv_path}")
+        return {}, set(), errors
+
+    guild_key = config.get("guild_key")
+    if not guild_key:
+        errors.append("Guild key not configured")
+        return {}, set(), errors
+
+    try:
+        db = parse_saved_variables(sv_path)
+    except Exception as e:
+        errors.append(f"Failed to parse SavedVariables: {e}")
+        return {}, set(), errors
+
+    wow_events = extract_events(db, guild_key)
+    deleted_ids = get_deleted_event_ids(db, guild_key)
+    today = date.today()
+    cutoff = today + timedelta(days=7)
+
+    result: dict[str, CalendarEvent] = {}
+    for evt in wow_events:
+        try:
+            evt_date = date.fromisoformat(evt.date)
+        except ValueError:
+            continue
+        if evt_date < today or evt_date > cutoff:
+            continue
+        # Only include events where a roster has been created (group assignments)
+        has_roster = any(p.group > 0 for p in evt.participants)
+        if not has_roster:
+            continue
+        result[evt.event_id] = evt
 
     return result, deleted_ids, errors
 
