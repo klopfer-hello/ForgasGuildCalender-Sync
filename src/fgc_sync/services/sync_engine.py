@@ -198,7 +198,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     mapping: dict = config.get("discord_message_mapping", {})
     discord.clear_members_cache()
 
-    for event_id, evt in all_events.items():
+    for event_id, evt in sorted(all_events.items(), key=lambda x: x[1].date):
         existing = mapping.get(event_id)
         confirmed_names = sorted(
             p.name for p in evt.participants if p.attendance == Attendance.CONFIRMED
@@ -347,8 +347,11 @@ def _collect_all_future_events(
             continue
         if evt_date < today or evt_date > cutoff:
             continue
-        # Only include events where a roster has been created (group assignments)
-        has_roster = any(p.group > 0 for p in evt.participants)
+        # Only include events where a roster has been created (confirmed members with groups)
+        has_roster = any(
+            p.group > 0 and p.attendance == Attendance.CONFIRMED
+            for p in evt.participants
+        )
         if not has_roster:
             continue
         result[evt.event_id] = evt
