@@ -88,7 +88,7 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
    - **In mapping, content hash changed, no new confirmed** → update image only
    - **In mapping, hash unchanged** → skip
 3. Events no longer in WoW (or outside 7-day window) → delete channel
-4. Events that happened 12+ hours ago → delete channel
+4. Events that happened 24+ hours ago → delete channel
 5. Multi-client safe: content hash embedded in image filename, channels scanned before creating
 6. Persist `discord_message_mapping` to config
 
@@ -102,13 +102,13 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
 
 ### Discord Per-Event Channels
 
-Each event with a confirmed roster gets its own private text channel under a category:
-- **Channel name**: `2026-04-03-gruul-maggi-mit-forga`
+Each event with a confirmed roster gets its own text channel under a category:
+- **Channel name**: `2026-04-03-20:00-gruul-maggi-mit-forga` (date, time, title)
 - **Topic**: event summary, date, time, location
-- **Visibility**: hidden from `@everyone`, only confirmed participants + the bot can see it
+- **Visibility**: public to all server members
 - **Pings**: one-off notification messages — "Confirmed:" on creation, "Newly confirmed:" on updates
-- **Cleanup**: channels are deleted 12 hours after the event start time
-- When new members are confirmed, they automatically gain channel access and get pinged
+- **Cleanup**: channels are deleted 24 hours after the event start time
+- Channels are created in chronological order (sorted by date and time)
 
 ### Discord Member Matching
 
@@ -118,10 +118,10 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 
 1. Create a Discord application at discord.com/developers
 2. Bot tab: create bot, copy token, enable **Server Members Intent**
-3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Messages**, **Manage Channels**, **Manage Roles**, **Read Message History**
+3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Channels**, **Read Message History**
 4. Invite bot to your server
 5. Create a **category** in Discord (e.g. "Raids")
-6. In the category's permission settings, give the bot role **Manage Channels** and **Manage Roles** for that category only — this scopes the bot's permissions to that category, preventing it from affecting other channels
+6. In the category's permission settings, give the bot role **Manage Channels** for that category only — this scopes the bot's channel creation/deletion to that category, preventing it from affecting other channels
 7. Right-click the category → Copy Category ID
 8. In the app's Settings, fill in Bot Token, Server ID, and Category ID
 
