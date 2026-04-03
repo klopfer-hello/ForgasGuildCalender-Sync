@@ -1,0 +1,87 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[gui]"
+          pip install pyinstaller
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onefile --windowed ^
+            --name "FGC-Sync" ^
+            --add-data "resources;resources" ^
+            --hidden-import "fgc_sync.services.discord_poster" ^
+            --hidden-import "fgc_sync.services.roster_image" ^
+            --hidden-import "fgc_sync.services.google_calendar" ^
+            --hidden-import "fgc_sync.services.lua_parser" ^
+            --hidden-import "fgc_sync.services.file_watcher" ^
+            --hidden-import "fgc_sync.services.config" ^
+            --hidden-import "fgc_sync.controllers.app_controller" ^
+            --hidden-import "fgc_sync.controllers.sync_controller" ^
+            src/fgc_sync/app.py
+        shell: cmd
+
+      - name: Build CLI executable
+        run: |
+          pyinstaller --noconfirm --onefile --console ^
+            --name "FGC-Sync-CLI" ^
+            --add-data "resources;resources" ^
+            --hidden-import "fgc_sync.services.discord_poster" ^
+            --hidden-import "fgc_sync.services.roster_image" ^
+            --hidden-import "fgc_sync.services.google_calendar" ^
+            --hidden-import "fgc_sync.services.lua_parser" ^
+            --hidden-import "fgc_sync.services.config" ^
+            src/fgc_sync/cli.py
+        shell: cmd
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-executables
+          path: |
+            dist/FGC-Sync.exe
+            dist/FGC-Sync-CLI.exe
+
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-executables
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/FGC-Sync.exe
+            dist/FGC-Sync-CLI.exe
