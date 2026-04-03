@@ -36,25 +36,25 @@ def main():
     )
     log = logging.getLogger(__name__)
 
-    if not config.is_setup_complete and not args.discord_only:
+    if not config.is_setup_complete:
         log.error(
             "Setup incomplete. Run the GUI on Windows first, or manually create "
-            "%s with wow_path, account_folder, guild_key, and calendar_id.",
+            "%s with wow_path, account_folder, and guild_key.",
             config.path,
         )
         sys.exit(1)
 
-    # Google Calendar sync
-    if not args.discord_only:
+    # Google Calendar sync (optional)
+    if not args.discord_only and config.is_google_configured:
         gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
-        if not gcal.load_credentials():
-            log.error("Google credentials not found or expired. Re-authenticate via the GUI.")
-            sys.exit(1)
-        result = execute_sync(config, gcal)
-        log.info("Google Calendar: %s", result)
-        if result.errors:
-            for err in result.errors:
-                log.error("  %s", err)
+        if gcal.load_credentials():
+            result = execute_sync(config, gcal)
+            log.info("Google Calendar: %s", result)
+            if result.errors:
+                for err in result.errors:
+                    log.error("  %s", err)
+        else:
+            log.warning("Google credentials not found or expired, skipping Google Calendar sync")
 
     # Discord sync
     token = config.get("discord_bot_token", "")

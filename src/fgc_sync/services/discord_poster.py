@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import time
 
 import requests
@@ -16,6 +18,28 @@ log = logging.getLogger(__name__)
 # Discord API v10
 BASE_URL = "https://discord.com/api/v10"
 
+# Pattern to extract event_id and hash from filenames like roster_fgc-123_h7a3b2f.png
+_FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)\.png")
+
+
+def compute_event_hash(event: CalendarEvent) -> str:
+    """Compute a short content hash from event data that changes when the roster changes."""
+    confirmed = sorted(
+        p.name for p in event.participants if p.attendance == Attendance.CONFIRMED
+    )
+    signed = sorted(
+        p.name for p in event.participants if p.attendance == Attendance.SIGNED
+    )
+    benched = sorted(
+        p.name for p in event.participants if p.attendance == Attendance.BENCHED
+    )
+    groups = sorted(
+        (p.name, p.group, p.slot)
+        for p in event.participants if p.group > 0
+    )
+    payload = f"{event.event_id}|{event.revision}|{confirmed}|{signed}|{benched}|{groups}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:8]
+
 
 class DiscordPoster:
     """Synchronous Discord REST client for posting roster images."""
@@ -27,6 +51,7 @@ class DiscordPoster:
         self._session = requests.Session()
         self._session.headers["Authorization"] = f"Bot {bot_token}"
         self._members_cache: list[dict] | None = None
+        self._bot_messages_cache: list[dict] | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -37,23 +62,24 @@ class DiscordPoster:
     def post_event(
         self, event: CalendarEvent, timezone: str,
     ) -> dict:
-        """Post roster image + mentions reply. Returns {image_id, mention_id?}."""
+        """Post roster image + mentions reply. Returns {image_id, mention_id?, hash}."""
+        content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
+        filename = f"roster_{event.event_id}_h{content_hash}.png"
 
         data = self._upload_image(
             "POST",
             f"/channels/{self._channel_id}/messages",
             image_bytes,
-            f"roster_{event.event_id}.png",
+            filename,
             "",
         )
         image_msg_id = data["id"]
         log.info("Discord: posted image %s for %s", image_msg_id, event.title)
 
-        # Post mentions as a reply below the image
         mention_msg_id = self._post_mentions_reply(image_msg_id, event)
 
-        result = {"image_id": image_msg_id}
+        result = {"image_id": image_msg_id, "hash": content_hash}
         if mention_msg_id:
             result["mention_id"] = mention_msg_id
         return result
@@ -62,16 +88,19 @@ class DiscordPoster:
         self, message_ids: dict, event: CalendarEvent, timezone: str,
     ) -> dict:
         """Edit an existing event image and update the mention reply."""
+        content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
         image_msg_id = message_ids["image_id"]
+        filename = f"roster_{event.event_id}_h{content_hash}.png"
 
         self._upload_image(
             "PATCH",
             f"/channels/{self._channel_id}/messages/{image_msg_id}",
             image_bytes,
-            f"roster_{event.event_id}.png",
+            filename,
             "",
         )
+        message_ids["hash"] = content_hash
         log.info("Discord: updated image %s for %s", image_msg_id, event.title)
 
         # Update or create mention reply
@@ -100,7 +129,6 @@ class DiscordPoster:
     def delete_event(self, message_ids: dict | str):
         """Delete event messages (image + optional mention reply)."""
         if isinstance(message_ids, str):
-            # Legacy: single message ID
             self._request("DELETE", f"/channels/{self._channel_id}/messages/{message_ids}")
             return
         for key in ("mention_id", "image_id"):
@@ -140,6 +168,71 @@ class DiscordPoster:
                 return False
             raise
 
+    # -- Multi-client: scan channel for existing bot messages --
+
+    def find_existing_event(self, event_id: str) -> dict | None:
+        """Search recent bot messages for an existing post of this event.
+
+        Returns {image_id, mention_id?, hash} if found, None otherwise.
+        """
+        for msg in self._get_bot_messages():
+            match = self._match_event_in_message(msg, event_id)
+            if match:
+                return match
+        return None
+
+    def clear_bot_messages_cache(self):
+        """Clear the bot messages cache. Call once per sync cycle."""
+        self._bot_messages_cache = None
+
+    def _get_bot_messages(self) -> list[dict]:
+        """Fetch recent bot messages from the channel (cached per sync cycle)."""
+        if self._bot_messages_cache is not None:
+            return self._bot_messages_cache
+
+        messages: list[dict] = []
+        params: dict = {"limit": 100}
+        # Fetch up to 200 messages (2 pages) to cover the 7-day window
+        for _ in range(2):
+            batch = self._request(
+                "GET", f"/channels/{self._channel_id}/messages", params=params,
+            )
+            if not batch:
+                break
+            # Filter to messages from our bot
+            bot_id = self._get_bot_user_id()
+            for msg in batch:
+                if msg.get("author", {}).get("id") == bot_id:
+                    messages.append(msg)
+            if len(batch) < 100:
+                break
+            params["before"] = batch[-1]["id"]
+
+        self._bot_messages_cache = messages
+        return messages
+
+    def _get_bot_user_id(self) -> str | None:
+        """Get the bot's own user ID."""
+        if not hasattr(self, "_bot_user_id"):
+            data = self._request("GET", "/users/@me")
+            self._bot_user_id = data["id"] if data else None
+        return self._bot_user_id
+
+    def _match_event_in_message(self, msg: dict, event_id: str) -> dict | None:
+        """Check if a message contains a roster image for the given event_id."""
+        attachments = msg.get("attachments", [])
+        for att in attachments:
+            m = _FILENAME_PATTERN.match(att.get("filename", ""))
+            if m and m.group(1) == event_id:
+                result = {"image_id": msg["id"], "hash": m.group(2)}
+                # Look for a mention reply referencing this image
+                # (we can't efficiently find replies from here, but the
+                # sync engine will handle mention replies separately)
+                return result
+        return None
+
+    # -- Mention reply --
+
     def _post_mentions_reply(self, image_msg_id: str, event: CalendarEvent) -> str | None:
         """Post a reply with confirmed member mentions below the image."""
         mentions = self._build_confirmed_mentions(event)
@@ -156,16 +249,6 @@ class DiscordPoster:
         mention_id = data["id"]
         log.info("Discord: posted mention reply %s", mention_id)
         return mention_id
-
-    def message_exists(self, message_id: str) -> bool:
-        """Check if a message still exists in the channel."""
-        try:
-            self._request("GET", f"/channels/{self._channel_id}/messages/{message_id}")
-            return True
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                return False
-            raise
 
     # -- Member lookup & pinging --
 
@@ -254,7 +337,6 @@ class DiscordPoster:
 
     def _request(self, method: str, path: str, **kwargs) -> dict | list | None:
         url = BASE_URL + path
-        # Ensure JSON content-type for non-upload requests
         headers = kwargs.pop("headers", {})
         headers["Content-Type"] = "application/json"
         for attempt in range(3):

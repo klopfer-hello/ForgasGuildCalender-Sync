@@ -16,7 +16,7 @@ from fgc_sync.models import (
     SyncResult,
 )
 from fgc_sync.services.config import Config
-from fgc_sync.services.discord_poster import DiscordPoster
+from fgc_sync.services.discord_poster import DiscordPoster, compute_event_hash
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import (
     extract_events,
@@ -197,56 +197,63 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     mapping: dict = config.get("discord_message_mapping", {})
     discord.clear_members_cache()
+    discord.clear_bot_messages_cache()
 
     for event_id, evt in sorted(all_events.items(), key=lambda x: x[1].date):
         existing = mapping.get(event_id)
+        content_hash = compute_event_hash(evt)
         confirmed_names = sorted(
             p.name for p in evt.participants if p.attendance == Attendance.CONFIRMED
         )
 
         try:
+            # If not in local mapping, check if another client already posted it
             if existing is None:
-                msg_ids = discord.post_event(evt, timezone)
-                mapping[event_id] = {
-                    "message_ids": msg_ids,
-                    "revision": evt.revision,
-                    "confirmed": confirmed_names,
-                }
-                result.created += 1
+                remote = discord.find_existing_event(event_id)
+                if remote and remote.get("hash") == content_hash:
+                    # Another client already posted and it's up to date
+                    mapping[event_id] = {
+                        "message_ids": remote,
+                        "revision": evt.revision,
+                        "confirmed": confirmed_names,
+                    }
+                    result.skipped += 1
+                    log.info("Discord: adopted existing message for %s", evt.title)
+                    continue
+                elif remote:
+                    # Another client posted but content changed — update it
+                    existing = {"message_ids": remote}
 
-            elif existing.get("revision") != evt.revision:
-                old_confirmed = set(existing.get("confirmed", []))
+            msg_ids = (existing or {}).get("message_ids", existing.get("message_id", {})) if existing else None
+
+            if msg_ids is None:
+                # New event, no existing message
+                msg_ids = discord.post_event(evt, timezone)
+                result.created += 1
+            elif existing and existing.get("message_ids", {}).get("hash") == content_hash:
+                # Hash matches — already up to date (same client or another)
+                result.skipped += 1
+                continue
+            else:
+                # Content changed — update
+                old_confirmed = set((existing or {}).get("confirmed", []))
                 new_confirmed = set(confirmed_names)
                 has_new_confirmed = bool(new_confirmed - old_confirmed)
-                msg_ids = existing.get("message_ids", existing.get("message_id", {}))
 
                 if discord.message_exists(msg_ids):
-                    # Always edit the image in place
                     msg_ids = discord.update_event(msg_ids, evt, timezone)
                     if has_new_confirmed:
-                        # Repost only the mention reply for fresh pings
                         msg_ids = discord.repost_mentions(msg_ids, evt)
                     result.updated += 1
                 else:
                     msg_ids = discord.post_event(evt, timezone)
                     result.created += 1
 
-                mapping[event_id] = {
-                    "message_ids": msg_ids,
-                    "revision": evt.revision,
-                    "confirmed": confirmed_names,
-                }
-
-            elif not discord.message_exists(existing.get("message_ids", existing.get("message_id", {}))):
-                msg_ids = discord.post_event(evt, timezone)
-                mapping[event_id] = {
-                    "message_ids": msg_ids,
-                    "revision": evt.revision,
-                    "confirmed": confirmed_names,
-                }
-                result.created += 1
-            else:
-                result.skipped += 1
+            mapping[event_id] = {
+                "message_ids": msg_ids,
+                "revision": evt.revision,
+                "confirmed": confirmed_names,
+            }
 
         except Exception as e:
             result.errors.append(f"Discord error for {evt.title}: {e}")

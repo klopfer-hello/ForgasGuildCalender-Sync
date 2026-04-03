@@ -60,8 +60,11 @@ class Config:
             self.get("wow_path")
             and self.get("account_folder")
             and self.get("guild_key")
-            and self.get("calendar_id")
         )
+
+    @property
+    def is_google_configured(self) -> bool:
+        return bool(self.get("calendar_id"))
 
     @property
     def saved_variables_path(self) -> Path | None:

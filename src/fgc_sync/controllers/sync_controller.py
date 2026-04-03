@@ -25,10 +25,19 @@ class _SyncWorker(QObject):
         self._discord = discord
 
     def run(self):
-        try:
-            result = execute_sync(self._config, self._gcal)
-        except Exception as e:
-            result = SyncResult(errors=[str(e)])
+        result = SyncResult()
+
+        if self._config.is_google_configured and self._gcal.is_authenticated:
+            try:
+                gcal_result = execute_sync(self._config, self._gcal)
+                result.created += gcal_result.created
+                result.updated += gcal_result.updated
+                result.deleted += gcal_result.deleted
+                result.skipped += gcal_result.skipped
+                result.errors.extend(gcal_result.errors)
+            except Exception as e:
+                result.errors.append(f"Google sync failed: {e}")
+                log.error("Google sync failed: %s", e)
 
         if self._discord and self._discord.is_configured:
             try:
@@ -68,12 +77,9 @@ class SyncController(QObject):
             log.info("Sync already in progress, skipping")
             return
 
-        if not self._gcal.is_authenticated:
-            if not self._gcal.load_credentials():
-                self.sync_completed.emit(
-                    SyncResult(errors=["Not logged in to Google"])
-                )
-                return
+        # Try loading Google credentials if configured, but don't block sync
+        if self._config.is_google_configured and not self._gcal.is_authenticated:
+            self._gcal.load_credentials()
 
         self._thread = QThread()
         self._worker = _SyncWorker(self._config, self._gcal, self._discord)
