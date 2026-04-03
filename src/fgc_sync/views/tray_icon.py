@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +19,21 @@ def _startup_shortcut_path() -> Path:
     return startup / "FGCCalendarSync.lnk"
 
 
+log = logging.getLogger(__name__)
+
+
 def _exe_path() -> str:
-    """Return the path to fgc-sync.exe in the venv."""
-    return str(Path(sys.executable).parent / "fgc-sync.exe")
+    """Return the path to fgc-sync.exe, checking multiple locations."""
+    # 1. Next to the running interpreter (works when launched from the correct venv)
+    candidate = Path(sys.executable).parent / "fgc-sync.exe"
+    if candidate.exists():
+        return str(candidate)
+    # 2. Resolve via PATH (works when installed in a different venv/environment)
+    found = shutil.which("fgc-sync")
+    if found:
+        return found
+    # 3. Fallback to the original assumption
+    return str(candidate)
 
 
 def is_autostart_enabled() -> bool:
@@ -33,18 +47,18 @@ def set_autostart(enabled: bool):
             import subprocess
             exe = _exe_path()
             ps_script = (
-                f'$ws = New-Object -ComObject WScript.Shell; '
-                f'$sc = $ws.CreateShortcut("{shortcut}"); '
-                f'$sc.TargetPath = "{exe}"; '
-                f'$sc.Description = "FGC Calendar Sync"; '
-                f'$sc.Save()'
+                "$ws = New-Object -ComObject WScript.Shell; "
+                f"$sc = $ws.CreateShortcut('{shortcut}'); "
+                f"$sc.TargetPath = '{exe}'; "
+                "$sc.Description = 'FGC Calendar Sync'; "
+                "$sc.Save()"
             )
             subprocess.run(
                 ["powershell", "-Command", ps_script],
                 check=True, capture_output=True,
             )
         except Exception:
-            pass
+            log.exception("Failed to create startup shortcut")
     elif shortcut.exists():
         shortcut.unlink()
 
@@ -134,3 +148,13 @@ class TrayIcon(QObject):
     @Slot(bool)
     def _toggle_autostart(self, enabled: bool):
         set_autostart(enabled)
+        actual = is_autostart_enabled()
+        if actual != enabled:
+            self._autostart_action.blockSignals(True)
+            self._autostart_action.setChecked(actual)
+            self._autostart_action.blockSignals(False)
+            self._tray.showMessage(
+                "Autostart Error",
+                "Failed to create startup shortcut. Check logs for details.",
+                QSystemTrayIcon.MessageIcon.Warning, 5000,
+            )
