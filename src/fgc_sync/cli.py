@@ -155,6 +155,10 @@ def main():
         help="Download and install the latest version",
     )
     parser.add_argument(
+        "--setup", action="store_true",
+        help="Re-run the interactive setup (reconfigure WoW, Discord, Google)",
+    )
+    parser.add_argument(
         "--discord-only", action="store_true",
         help="Only sync to Discord, skip Google Calendar",
     )
@@ -202,8 +206,8 @@ def main():
     )
     log = logging.getLogger(__name__)
 
-    if not config.is_setup_complete:
-        print("Setup required. Starting interactive setup...\n")
+    if args.setup or not config.is_setup_complete:
+        print("Starting interactive setup...\n")
         if not _run_cli_setup(config):
             print("Setup cancelled.")
             sys.exit(1)
