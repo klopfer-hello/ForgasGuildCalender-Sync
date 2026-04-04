@@ -86,7 +86,34 @@ def perform_update(info: UpdateInfo) -> str:
 
 
 def _update_pip() -> str:
-    """Upgrade via pip."""
+    """Upgrade via pip.
+
+    On Windows the running script .exe wrapper locks itself, so pip
+    cannot overwrite it in-place.  We spawn a detached process that
+    waits for us to exit and then runs the upgrade.
+    """
+    pip_cmd = f'"{sys.executable}" -m pip install --upgrade {_PIP_URL}'
+
+    if os.name == "nt":
+        # Write a small batch script that waits, upgrades, and self-deletes
+        script_path = Path(tempfile.gettempdir()) / "fgc_sync_pip_update.cmd"
+        script = (
+            "@echo off\r\n"
+            "timeout /t 3 /nobreak >nul\r\n"
+            f"{pip_cmd}\r\n"
+            'del "%~f0"\r\n'
+        )
+        script_path.write_text(script, encoding="ascii")
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        DETACHED_PROCESS = 0x00000008
+        subprocess.Popen(
+            ["cmd", "/c", str(script_path)],
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+        return "exit"
+
+    # On Linux the script wrapper is not locked
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", _PIP_URL]
     log.info("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
