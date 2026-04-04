@@ -189,7 +189,12 @@ class AppController:
 
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
-        QMessageBox.about(None, f"About {APP_NAME}", about_text())
+        text = about_text()
+        if self._pending_update:
+            text += f"\n\nUpdate available: v{self._pending_update.latest_version}"
+        else:
+            text += "\n\nYou are using the latest version."
+        QMessageBox.about(None, f"About {APP_NAME}", text)
 
     def _on_sync_done(self, result: SyncResult):
         status = str(result)
