@@ -1,0 +1,15 @@
+name: Cleanup Old Releases
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  delete-old-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Nats-ji/delete-old-releases@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          keep-count: 1
+          remove-tags: false
