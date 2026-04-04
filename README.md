@@ -43,26 +43,13 @@ Requires Python 3.12+. No GUI or PySide6 needed.
 pip install "fgc-sync @ git+https://github.com/klopfer-hello/ForgasGuildCalender-Sync.git"
 ```
 
-Create your config manually at `~/.config/ForgasGuildCalendar-Sync/config.json`:
-
-```json
-{
-  "wow_path": "/path/to/wow",
-  "account_folder": "YOUR_ACCOUNT_ID",
-  "guild_key": "Realm-Guild Name",
-  "timezone": "Europe/Berlin"
-}
-```
-
-Add Discord and/or Google Calendar settings as needed (see setup sections below).
-
-Run a single sync cycle:
+Run `fgc-sync-cli` — an interactive setup will guide you through selecting your WoW directory, account, and guild. Discord and Google Calendar can optionally be configured during setup.
 
 ```bash
 fgc-sync-cli
 ```
 
-Or Discord only (skip Google Calendar):
+Subsequent runs perform a single sync cycle and exit. Use `--discord-only` to skip Google Calendar:
 
 ```bash
 fgc-sync-cli --discord-only

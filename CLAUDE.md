@@ -48,7 +48,7 @@ src/fgc_sync/
 ├── views/           # V — Pure Qt UI, emits signals
 │   ├── styles.py            #   System-aware light/dark stylesheet
 │   ├── tray_icon.py         #   System tray icon + menu
-│   ├── setup_wizard.py      #   First-run: WoW path → Google login → calendar
+│   ├── setup_wizard.py      #   First-run: WoW path → Discord → Google → calendar
 │   ├── settings_dialog.py   #   Post-setup config changes
 │   └── preview_dialog.py    #   Sync preview table
 │
@@ -139,10 +139,11 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 - Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
 - Runs a single sync cycle and exits — designed for cron
 - No Qt/PySide6 dependency required
-- Flags: `--discord-only`, `--version`, `--about`, `--check-update`, `--update`
+- Flags: `--discord-only`, `--version`, `--about`, `--check-update`, `--update`, `--config-dir`
+- Interactive setup on first run using `questionary` (arrow-key select, tab path completion)
+- Handles git bash `/d/...` paths on Windows automatically
 - Checks for updates after every sync run (log message only)
 - Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
-- Initial setup: create config manually or run GUI on Windows first, copy config.json
 - Cron example: `*/5 * * * * /path/to/fgc-sync-cli`
 
 ### Auto-Update (`updater.py`)
@@ -151,8 +152,9 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 - Compares with current version from package metadata (`_version.py`)
 - **GUI**: checks at startup + every 6 hours, shows popup with Update Now / Later
 - **CLI**: logs a message after sync if newer version exists; `--update` to install
-- **Exe mode**: downloads new exe, writes a `.cmd` swap script, exits, script replaces exe and relaunches
-- **Pip mode**: runs `pip install --upgrade git+<repo>` in a subprocess
+- **Exe mode**: downloads new exe, writes a `.cmd` swap script, exits, script replaces exe (no auto-restart to avoid DLL conflicts)
+- **Pip mode**: on Windows spawns a detached batch script; on Linux runs `pip install --upgrade` directly
+- Cleans up leftover `.bak`/`.update` files on startup
 - Skips check if version is `"dev"` (editable install without metadata)
 
 ### Google Calendar Events
@@ -199,6 +201,7 @@ ForgasGuildCalendar-Sync/
 │   └── release.yml          # PyInstaller build + GitHub release on tag push
 ├── client_secrets.json      # Google OAuth (gitignored)
 ├── resources/
+│   ├── app.ico              # Application icon (purple G, 16-256px)
 │   └── class_icons/         # WoW class icons for roster images
 ├── src/fgc_sync/            # Package source (see Architecture above)
 └── tests/
