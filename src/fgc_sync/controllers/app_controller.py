@@ -7,6 +7,7 @@ import logging
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from fgc_sync._version import APP_NAME, about_text
 from fgc_sync.controllers.sync_controller import SyncController
 from fgc_sync.models import SyncResult
 from fgc_sync.services.config import Config
@@ -50,6 +51,7 @@ class AppController:
         self._tray.sync_requested.connect(self._sync.request_sync)
         self._tray.preview_requested.connect(self._show_preview)
         self._tray.settings_requested.connect(self._show_settings)
+        self._tray.about_requested.connect(self._show_about)
         self._tray.quit_requested.connect(self._quit)
         self._sync.sync_completed.connect(self._on_sync_done)
         self._tray.show()
@@ -108,6 +110,10 @@ class AppController:
             self._sync._discord = self._discord
             self._start_watcher()
             self._sync.request_sync()
+
+    def _show_about(self):
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.about(None, f"About {APP_NAME}", about_text())
 
     def _on_sync_done(self, result: SyncResult):
         status = str(result)

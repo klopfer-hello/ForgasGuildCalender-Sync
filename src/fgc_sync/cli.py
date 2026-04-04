@@ -10,6 +10,7 @@ import argparse
 import logging
 import sys
 
+from fgc_sync._version import __version__, about_text
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
@@ -19,10 +20,21 @@ from fgc_sync.services.sync_engine import execute_discord_sync, execute_sync
 def main():
     parser = argparse.ArgumentParser(description="FGC Calendar Sync — headless CLI")
     parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--about", action="store_true",
+        help="Show version and license information",
+    )
+    parser.add_argument(
         "--discord-only", action="store_true",
         help="Only sync to Discord, skip Google Calendar",
     )
     args = parser.parse_args()
+
+    if args.about:
+        print(about_text())
+        return
 
     config = Config()
 

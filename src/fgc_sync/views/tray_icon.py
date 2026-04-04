@@ -83,6 +83,7 @@ class TrayIcon(QObject):
     sync_requested = Signal()
     preview_requested = Signal()
     settings_requested = Signal()
+    about_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, parent=None):
@@ -118,6 +119,10 @@ class TrayIcon(QObject):
         self._menu.addAction(self._autostart_action)
 
         self._menu.addSeparator()
+
+        about = QAction("About...", self._menu)
+        about.triggered.connect(self.about_requested.emit)
+        self._menu.addAction(about)
 
         quit_action = QAction("Quit", self._menu)
         quit_action.triggered.connect(self.quit_requested.emit)
