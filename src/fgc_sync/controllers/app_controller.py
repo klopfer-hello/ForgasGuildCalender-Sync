@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from fgc_sync._version import APP_NAME, about_text
@@ -14,7 +15,6 @@ from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.file_watcher import FileWatcher
 from fgc_sync.services.google_calendar import GoogleCalendarClient
-from fgc_sync.services.updater import check_for_update, detect_install_mode, perform_update
 from fgc_sync.views.preview_dialog import PreviewDialog
 from fgc_sync.views.settings_dialog import SettingsDialog
 from fgc_sync.views.setup_wizard import SetupWizard
@@ -23,17 +23,6 @@ from fgc_sync.views.tray_icon import TrayIcon, create_default_icon
 log = logging.getLogger(__name__)
 
 _UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000  # 6 hours
-
-
-class _UpdateCheckWorker(QObject):
-    finished = Signal(object)  # UpdateInfo | None
-
-    def run(self):
-        try:
-            self.finished.emit(check_for_update())
-        except Exception:
-            log.exception("Update check failed")
-            self.finished.emit(None)
 
 
 class AppController:
@@ -50,7 +39,7 @@ class AppController:
         self._watcher: FileWatcher | None = None
         self._poll_timer: QTimer | None = None
         self._update_timer: QTimer | None = None
-        self._update_thread: QThread | None = None
+        self._update_checking = False
         self._pending_update: UpdateInfo | None = None
 
     def _create_discord_poster(self) -> DiscordPoster | None:
@@ -81,6 +70,10 @@ class AppController:
             self._start_poll_timer()
             self._sync.request_sync()
 
+        # Delay update check to avoid crashing during startup
+        QTimer.singleShot(5000, self._start_update_checks)
+
+    def _start_update_checks(self):
         self._check_for_update()
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._check_for_update)
@@ -135,20 +128,24 @@ class AppController:
             self._sync.request_sync()
 
     def _check_for_update(self):
-        if self._update_thread and self._update_thread.isRunning():
+        if self._update_checking:
             return
-        self._update_thread = QThread()
-        worker = _UpdateCheckWorker()
-        worker.moveToThread(self._update_thread)
-        self._update_thread.started.connect(worker.run)
-        worker.finished.connect(self._on_update_checked)
-        worker.finished.connect(self._update_thread.quit)
-        # prevent GC
-        self._update_thread._worker = worker
-        self._update_thread.start()
+        self._update_checking = True
+
+        def _run():
+            try:
+                from fgc_sync.services.updater import check_for_update
+                info = check_for_update()
+            except Exception:
+                log.exception("Update check failed")
+                info = None
+            self._update_checking = False
+            # Deliver result to the main thread via a single-shot timer
+            QTimer.singleShot(0, lambda: self._on_update_checked(info))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_update_checked(self, info: UpdateInfo | None):
-        self._update_thread = None
         if info and info.is_newer:
             log.info("Update available: v%s -> v%s", info.current_version, info.latest_version)
             self._pending_update = info
@@ -178,6 +175,7 @@ class AppController:
             return
         from PySide6.QtWidgets import QMessageBox
         try:
+            from fgc_sync.services.updater import perform_update
             result = perform_update(self._pending_update)
         except Exception as e:
             log.exception("Update failed")
