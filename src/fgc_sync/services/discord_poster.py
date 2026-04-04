@@ -89,30 +89,8 @@ class DiscordPoster:
         log.info("Discord: created channel #%s (%s) for %s", name, channel_id, event.title)
         return channel_id
 
-    def delete_mention_messages(self, channel_id: str):
-        """Delete messages containing user mentions to clear unread notifications."""
-        bot_id = self._get_bot_user_id()
-        try:
-            messages = self._request(
-                "GET", f"/channels/{channel_id}/messages", params={"limit": 50},
-            )
-            if not messages:
-                return
-            for msg in messages:
-                # Only delete the bot's own mention messages (not the roster image)
-                if msg.get("author", {}).get("id") != bot_id:
-                    continue
-                if msg.get("mentions"):
-                    try:
-                        self._request("DELETE", f"/channels/{channel_id}/messages/{msg['id']}")
-                    except requests.HTTPError:
-                        pass
-        except requests.HTTPError:
-            pass
-
     def delete_channel(self, channel_id: str):
-        """Delete a channel, clearing mention messages first."""
-        self.delete_mention_messages(channel_id)
+        """Delete a channel."""
         self._request("DELETE", f"/channels/{channel_id}")
         log.info("Discord: deleted channel %s", channel_id)
 
