@@ -4,15 +4,31 @@ from __future__ import annotations
 
 import logging
 import sys
+import traceback
 
-from PySide6.QtWidgets import QApplication
-
-from fgc_sync.controllers.app_controller import AppController
 from fgc_sync.services.config import Config
-from fgc_sync.views.styles import get_stylesheet
+
+
+def _crash_log(msg: str):
+    """Write to the crash log when normal logging is not yet available."""
+    try:
+        from fgc_sync.services.config import _app_data_dir
+        log_path = _app_data_dir() / "crash.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 
 def main():
+    try:
+        _main()
+    except Exception:
+        _crash_log(traceback.format_exc())
+        raise
+
+
+def _main():
     config = Config()
 
     logging.basicConfig(
@@ -24,6 +40,11 @@ def main():
         ],
     )
     log = logging.getLogger(__name__)
+
+    from PySide6.QtWidgets import QApplication
+
+    from fgc_sync.controllers.app_controller import AppController
+    from fgc_sync.views.styles import get_stylesheet
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -39,3 +60,7 @@ def main():
     exit_code = app.exec()
     log.info("Event loop exited with code %d", exit_code)
     sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

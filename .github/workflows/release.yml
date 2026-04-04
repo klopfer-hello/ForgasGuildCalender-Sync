@@ -34,6 +34,7 @@ jobs:
           pyinstaller --noconfirm --onefile --windowed ^
             --name "FGC-Sync" ^
             --add-data "resources;resources" ^
+            --hidden-import "PIL" ^
             --hidden-import "fgc_sync.services.discord_poster" ^
             --hidden-import "fgc_sync.services.roster_image" ^
             --hidden-import "fgc_sync.services.google_calendar" ^
@@ -50,6 +51,7 @@ jobs:
           pyinstaller --noconfirm --onefile --console ^
             --name "FGC-Sync-CLI" ^
             --add-data "resources;resources" ^
+            --hidden-import "PIL" ^
             --hidden-import "fgc_sync.services.discord_poster" ^
             --hidden-import "fgc_sync.services.roster_image" ^
             --hidden-import "fgc_sync.services.google_calendar" ^
