@@ -374,6 +374,9 @@ def _collect_all_future_events(
     wow_events = extract_events(db, guild_key)
     deleted_ids = get_deleted_event_ids(db, guild_key)
     today = date.today()
+    # Include events from yesterday so the 24-hour cleanup logic can
+    # evaluate them instead of deleting their channels immediately.
+    earliest = today - timedelta(days=1)
     cutoff = today + timedelta(days=7)
 
     result: dict[str, CalendarEvent] = {}
@@ -382,7 +385,7 @@ def _collect_all_future_events(
             evt_date = date.fromisoformat(evt.date)
         except ValueError:
             continue
-        if evt_date < today or evt_date > cutoff:
+        if evt_date < earliest or evt_date > cutoff:
             continue
         # Only include events where a roster has been created (confirmed members with groups)
         has_roster = any(
