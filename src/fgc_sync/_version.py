@@ -1,16 +1,48 @@
 """Single source of truth for version and license metadata."""
 
-from importlib.metadata import metadata, PackageNotFoundError
+from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 APP_NAME = "FGC Calendar Sync"
 GITHUB_REPO = "klopfer-hello/ForgasGuildCalender-Sync"
 PROJECT_URL = f"https://github.com/{GITHUB_REPO}"
 
-try:
-    _meta = metadata("fgc-sync")
-    __version__ = _meta["Version"]
-except PackageNotFoundError:
-    __version__ = "dev"
+
+def _read_version_from_pyproject(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("version"):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_version() -> str:
+    # 1. Source tree (dev / editable install)
+    v = _read_version_from_pyproject(Path(__file__).parents[2] / "pyproject.toml")
+    if v:
+        return v
+    # 2. PyInstaller bundle (_MEIPASS)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        v = _read_version_from_pyproject(Path(meipass) / "pyproject.toml")
+        if v:
+            return v
+    # 3. Package metadata (pip install from wheel/git without source)
+    try:
+        from importlib.metadata import metadata
+        return metadata("fgc-sync")["Version"]
+    except Exception:
+        pass
+    return "dev"
+
+
+__version__ = _resolve_version()
 
 LICENSE_TEXT = (
     "MIT License\n"
