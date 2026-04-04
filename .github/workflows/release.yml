@@ -40,33 +40,18 @@ jobs:
             --hidden-import "fgc_sync.services.google_calendar" ^
             --hidden-import "fgc_sync.services.lua_parser" ^
             --hidden-import "fgc_sync.services.file_watcher" ^
+            --hidden-import "fgc_sync.services.updater" ^
             --hidden-import "fgc_sync.services.config" ^
             --hidden-import "fgc_sync.controllers.app_controller" ^
             --hidden-import "fgc_sync.controllers.sync_controller" ^
             src/fgc_sync/app.py
         shell: cmd
 
-      - name: Build CLI executable
-        run: |
-          pyinstaller --noconfirm --onefile --console ^
-            --name "FGC-Sync-CLI" ^
-            --add-data "resources;resources" ^
-            --hidden-import "PIL" ^
-            --hidden-import "fgc_sync.services.discord_poster" ^
-            --hidden-import "fgc_sync.services.roster_image" ^
-            --hidden-import "fgc_sync.services.google_calendar" ^
-            --hidden-import "fgc_sync.services.lua_parser" ^
-            --hidden-import "fgc_sync.services.config" ^
-            src/fgc_sync/cli.py
-        shell: cmd
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-executables
-          path: |
-            dist/FGC-Sync.exe
-            dist/FGC-Sync-CLI.exe
+          path: dist/FGC-Sync.exe
 
   release:
     needs: build-windows
@@ -136,6 +121,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body: ${{ steps.changelog.outputs.CHANGELOG }}
-          files: |
-            dist/FGC-Sync.exe
-            dist/FGC-Sync-CLI.exe
+          files: dist/FGC-Sync.exe
