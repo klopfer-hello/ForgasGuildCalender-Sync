@@ -40,6 +40,8 @@ class AppController:
         self._poll_timer: QTimer | None = None
         self._update_timer: QTimer | None = None
         self._update_checking = False
+        self._update_result: UpdateInfo | None = None
+        self._update_poll_timer: QTimer | None = None
         self._pending_update: UpdateInfo | None = None
 
     def _create_discord_poster(self) -> DiscordPoster | None:
@@ -131,19 +133,30 @@ class AppController:
         if self._update_checking:
             return
         self._update_checking = True
+        self._update_result = None
 
         def _run():
             try:
                 from fgc_sync.services.updater import check_for_update
-                info = check_for_update()
+                self._update_result = check_for_update()
             except Exception:
                 log.exception("Update check failed")
-                info = None
+                self._update_result = None
             self._update_checking = False
-            # Deliver result to the main thread via a single-shot timer
-            QTimer.singleShot(0, lambda: self._on_update_checked(info))
 
         threading.Thread(target=_run, daemon=True).start()
+
+        # Poll from the main thread until the background thread finishes
+        self._update_poll_timer = QTimer()
+        self._update_poll_timer.timeout.connect(self._poll_update_result)
+        self._update_poll_timer.start(500)
+
+    def _poll_update_result(self):
+        if self._update_checking:
+            return
+        self._update_poll_timer.stop()
+        self._update_poll_timer = None
+        self._on_update_checked(self._update_result)
 
     def _on_update_checked(self, info: UpdateInfo | None):
         if info and info.is_newer:
