@@ -3,7 +3,8 @@
 from importlib.metadata import metadata, PackageNotFoundError
 
 APP_NAME = "FGC Calendar Sync"
-PROJECT_URL = "https://github.com/klopfer-hello/ForgasGuildCalender-Sync"
+GITHUB_REPO = "klopfer-hello/ForgasGuildCalender-Sync"
+PROJECT_URL = f"https://github.com/{GITHUB_REPO}"
 
 try:
     _meta = metadata("fgc-sync")
