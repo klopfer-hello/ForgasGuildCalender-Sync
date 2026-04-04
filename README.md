@@ -123,6 +123,20 @@ Syncs raids where your character is signed up or confirmed to a personal Google 
 4. **Google Calendar** (if configured): for events where your character is signed up — creates/updates/deletes calendar entries
 5. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+This software uses [PySide6](https://doc.qt.io/qtforpython-6/) (Qt for Python), which is licensed under the [LGPL-3.0](https://www.gnu.org/licenses/lgpl-3.0.html). The standalone executables bundle PySide6 — as required by the LGPL, you can rebuild the executables from source to use a different version of PySide6:
+
+```bash
+pip install -e ".[gui]"
+pip install pyinstaller
+pyinstaller --onefile --windowed --name "FGC-Sync" --add-data "resources;resources" --hidden-import "PIL" src/fgc_sync/app.py
+```
+
+Other dependencies and their licenses: Pillow (HPND), google-api-python-client (Apache-2.0), requests (Apache-2.0), watchdog (Apache-2.0), slpp (MIT).
+
 ## Disclaimer
 
 This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
