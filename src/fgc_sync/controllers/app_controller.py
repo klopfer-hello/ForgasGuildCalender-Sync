@@ -206,11 +206,47 @@ class AppController:
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
         text = about_text()
-        if self._pending_update:
-            text += f"\n\nUpdate available: v{self._pending_update.latest_version}"
+        text += "\n\nChecking for updates..."
+        self._about_box = QMessageBox()
+        self._about_box.setWindowTitle(f"About {APP_NAME}")
+        self._about_box.setText(text)
+        self._about_box.show()
+
+        self._about_update_result = None
+        self._about_update_done = False
+
+        def _run():
+            try:
+                from fgc_sync.services.updater import check_for_update
+                self._about_update_result = check_for_update()
+            except Exception:
+                log.exception("Update check failed")
+            self._about_update_done = True
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        self._about_poll = QTimer()
+        self._about_poll.timeout.connect(self._poll_about_update)
+        self._about_poll.start(300)
+
+    def _poll_about_update(self):
+        if not self._about_update_done:
+            return
+        self._about_poll.stop()
+        self._about_poll = None
+
+        info = self._about_update_result
+        text = about_text()
+        if info and info.is_newer:
+            self._pending_update = info
+            self._tray.set_update_available(info.latest_version)
+            text += f"\n\nUpdate available: v{info.latest_version}"
         else:
             text += "\n\nYou are using the latest version."
-        QMessageBox.about(None, f"About {APP_NAME}", text)
+
+        if self._about_box:
+            self._about_box.setText(text)
+            self._about_box.adjustSize()
 
     def _on_sync_done(self, result: SyncResult):
         status = str(result)
