@@ -2,7 +2,7 @@
 
 ## Overview
 
-System tray companion tool for the **Forga's Guild Calendar** WoW addon. Reads raid/event data from the addon's SavedVariables file and syncs it to Google Calendar. Runs as a background process with file watching and periodic polling.
+System tray companion tool for the **Forga's Guild Calendar** WoW addon. Reads raid/event data from the addon's SavedVariables file and syncs it to Google Calendar and/or Discord. Runs as a background process with file watching and periodic polling.
 
 ## Environment
 
@@ -28,7 +28,8 @@ src/fgc_sync/
 ├── models/          # M — Pure data, no dependencies
 │   ├── enums.py     #   Attendance, EventType, SyncAction
 │   ├── events.py    #   CalendarEvent, Participant
-│   └── sync.py      #   SyncResult, SyncPlanEntry, SyncPlan
+│   ├── sync.py      #   SyncResult, SyncPlanEntry, SyncPlan
+│   └── update.py    #   UpdateInfo, InstallMode
 │
 ├── services/        # Business logic (no UI, no Qt)
 │   ├── config.py    #   JSON config in %APPDATA%
@@ -37,7 +38,8 @@ src/fgc_sync/
 │   ├── roster_image.py      #   Pillow-based roster card renderer
 │   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
 │   ├── sync_engine.py       #   Diff & sync (create/update/delete)
-│   └── file_watcher.py      #   Watchdog observer with debounce
+│   ├── file_watcher.py      #   Watchdog observer with debounce
+│   └── updater.py           #   GitHub release check + self-update
 │
 ├── controllers/     # C — Mediates views and services
 │   ├── app_controller.py    #   Orchestrates lifecycle, wires signals
@@ -50,6 +52,7 @@ src/fgc_sync/
 │   ├── settings_dialog.py   #   Post-setup config changes
 │   └── preview_dialog.py    #   Sync preview table
 │
+├── _version.py      # Version, license metadata, GitHub repo constant
 ├── app.py           # QApplication bootstrap (Windows GUI)
 ├── cli.py           # Headless CLI entry point (Linux/cron)
 └── __main__.py      # python -m fgc_sync (auto-detects mode)
@@ -136,10 +139,21 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 - Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
 - Runs a single sync cycle and exits — designed for cron
 - No Qt/PySide6 dependency required
-- `--discord-only` flag to skip Google Calendar sync
+- Flags: `--discord-only`, `--version`, `--about`, `--check-update`, `--update`
+- Checks for updates after every sync run (log message only)
 - Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
 - Initial setup: create config manually or run GUI on Windows first, copy config.json
 - Cron example: `*/5 * * * * /path/to/fgc-sync-cli`
+
+### Auto-Update (`updater.py`)
+
+- Queries GitHub releases API for latest version
+- Compares with current version from package metadata (`_version.py`)
+- **GUI**: checks at startup + every 6 hours, shows popup with Update Now / Later
+- **CLI**: logs a message after sync if newer version exists; `--update` to install
+- **Exe mode**: downloads new exe, writes a `.cmd` swap script, exits, script replaces exe and relaunches
+- **Pip mode**: runs `pip install --upgrade git+<repo>` in a subprocess
+- Skips check if version is `"dev"` (editable install without metadata)
 
 ### Google Calendar Events
 
@@ -177,12 +191,16 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 ```
 ForgasGuildCalendar-Sync/
 ├── pyproject.toml           # Package config, dependencies, entry point
+├── LICENSE                  # MIT license
 ├── CLAUDE.md                # This file
+├── README.md                # User-facing documentation
 ├── .gitignore
+├── .github/workflows/
+│   └── release.yml          # PyInstaller build + GitHub release on tag push
 ├── client_secrets.json      # Google OAuth (gitignored)
+├── resources/
+│   └── class_icons/         # WoW class icons for roster images
 ├── src/fgc_sync/            # Package source (see Architecture above)
-├── scripts/
-│   └── create_shortcut.ps1  # Windows startup shortcut helper
 └── tests/
     └── __init__.py
 ```
@@ -204,8 +222,9 @@ ForgasGuildCalendar-Sync/
 1. `git log vX.Y.Z..HEAD --oneline` — review commits since last release
 2. Determine version bump (PATCH / MINOR / MAJOR)
 3. Update `pyproject.toml` — `version = "X.Y.Z"`
-4. Commit: `chore: release vX.Y.Z`
-5. Tag: `git tag vX.Y.Z`
+4. Update `CLAUDE.md` if architecture, features, or conventions changed
+5. Commit: `chore: release vX.Y.Z`
+6. Tag: `git tag vX.Y.Z` (triggers CI build + GitHub release)
 
 ## Commit Requirements
 
