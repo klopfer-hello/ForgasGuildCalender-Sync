@@ -4,22 +4,36 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
 from fgc_sync._version import APP_NAME, about_text
 from fgc_sync.controllers.sync_controller import SyncController
-from fgc_sync.models import SyncResult
+from fgc_sync.models import SyncResult, UpdateInfo
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.file_watcher import FileWatcher
 from fgc_sync.services.google_calendar import GoogleCalendarClient
+from fgc_sync.services.updater import check_for_update, detect_install_mode, perform_update
 from fgc_sync.views.preview_dialog import PreviewDialog
 from fgc_sync.views.settings_dialog import SettingsDialog
 from fgc_sync.views.setup_wizard import SetupWizard
 from fgc_sync.views.tray_icon import TrayIcon, create_default_icon
 
 log = logging.getLogger(__name__)
+
+_UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000  # 6 hours
+
+
+class _UpdateCheckWorker(QObject):
+    finished = Signal(object)  # UpdateInfo | None
+
+    def run(self):
+        try:
+            self.finished.emit(check_for_update())
+        except Exception:
+            log.exception("Update check failed")
+            self.finished.emit(None)
 
 
 class AppController:
@@ -35,6 +49,9 @@ class AppController:
         self._tray = TrayIcon()
         self._watcher: FileWatcher | None = None
         self._poll_timer: QTimer | None = None
+        self._update_timer: QTimer | None = None
+        self._update_thread: QThread | None = None
+        self._pending_update: UpdateInfo | None = None
 
     def _create_discord_poster(self) -> DiscordPoster | None:
         token = self._config.get("discord_bot_token", "")
@@ -51,6 +68,7 @@ class AppController:
         self._tray.sync_requested.connect(self._sync.request_sync)
         self._tray.preview_requested.connect(self._show_preview)
         self._tray.settings_requested.connect(self._show_settings)
+        self._tray.update_requested.connect(self._perform_update)
         self._tray.about_requested.connect(self._show_about)
         self._tray.quit_requested.connect(self._quit)
         self._sync.sync_completed.connect(self._on_sync_done)
@@ -62,6 +80,11 @@ class AppController:
             self._start_watcher()
             self._start_poll_timer()
             self._sync.request_sync()
+
+        self._check_for_update()
+        self._update_timer = QTimer()
+        self._update_timer.timeout.connect(self._check_for_update)
+        self._update_timer.start(_UPDATE_CHECK_INTERVAL)
 
     def _start_poll_timer(self):
         """Poll every 5 minutes as a fallback alongside the file watcher."""
@@ -110,6 +133,61 @@ class AppController:
             self._sync._discord = self._discord
             self._start_watcher()
             self._sync.request_sync()
+
+    def _check_for_update(self):
+        if self._update_thread and self._update_thread.isRunning():
+            return
+        self._update_thread = QThread()
+        worker = _UpdateCheckWorker()
+        worker.moveToThread(self._update_thread)
+        self._update_thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_checked)
+        worker.finished.connect(self._update_thread.quit)
+        # prevent GC
+        self._update_thread._worker = worker
+        self._update_thread.start()
+
+    def _on_update_checked(self, info: UpdateInfo | None):
+        self._update_thread = None
+        if info and info.is_newer:
+            log.info("Update available: v%s -> v%s", info.current_version, info.latest_version)
+            self._pending_update = info
+            self._tray.set_update_available(info.latest_version)
+            self._prompt_update(info)
+
+    def _prompt_update(self, info: UpdateInfo):
+        from PySide6.QtWidgets import QMessageBox
+        msg = QMessageBox()
+        msg.setWindowTitle("Update Available")
+        msg.setText(
+            f"A new version of {APP_NAME} is available.\n\n"
+            f"Current version: v{info.current_version}\n"
+            f"New version: v{info.latest_version}"
+        )
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        msg.button(QMessageBox.StandardButton.Yes).setText("Update Now")
+        msg.button(QMessageBox.StandardButton.No).setText("Later")
+        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            self._perform_update()
+
+    def _perform_update(self):
+        if not self._pending_update:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            result = perform_update(self._pending_update)
+        except Exception as e:
+            log.exception("Update failed")
+            QMessageBox.warning(None, "Update Failed", str(e))
+            return
+
+        if result == "exit":
+            self._quit()
+        else:
+            QMessageBox.information(None, "Update Complete", result)
 
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox

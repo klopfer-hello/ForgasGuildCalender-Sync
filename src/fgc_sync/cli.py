@@ -27,6 +27,14 @@ def main():
         help="Show version and license information",
     )
     parser.add_argument(
+        "--check-update", action="store_true",
+        help="Check if a newer version is available",
+    )
+    parser.add_argument(
+        "--update", action="store_true",
+        help="Download and install the latest version",
+    )
+    parser.add_argument(
         "--discord-only", action="store_true",
         help="Only sync to Discord, skip Google Calendar",
     )
@@ -34,6 +42,23 @@ def main():
 
     if args.about:
         print(about_text())
+        return
+
+    if args.check_update or args.update:
+        from fgc_sync.services.updater import check_for_update, perform_update
+        info = check_for_update()
+        if info is None:
+            print("Could not check for updates.")
+            sys.exit(1)
+        if not info.is_newer:
+            print(f"Already up to date (v{info.current_version}).")
+            return
+        print(f"Update available: v{info.current_version} -> v{info.latest_version}")
+        if args.update:
+            result = perform_update(info)
+            print(result)
+            if result == "exit":
+                sys.exit(0)
         return
 
     config = Config()
@@ -82,6 +107,18 @@ def main():
     elif args.discord_only:
         log.error("Discord not configured. Set discord_bot_token, discord_category_id, discord_guild_id in config.")
         sys.exit(1)
+
+    # Check for updates (non-blocking, just inform)
+    try:
+        from fgc_sync.services.updater import check_for_update
+        info = check_for_update()
+        if info and info.is_newer:
+            log.info(
+                "Update available: v%s -> v%s. Run with --update to install.",
+                info.current_version, info.latest_version,
+            )
+    except Exception:
+        pass  # never fail the sync because of an update check
 
 
 if __name__ == "__main__":

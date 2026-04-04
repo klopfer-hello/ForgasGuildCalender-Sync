@@ -83,6 +83,7 @@ class TrayIcon(QObject):
     sync_requested = Signal()
     preview_requested = Signal()
     settings_requested = Signal()
+    update_requested = Signal()
     about_requested = Signal()
     quit_requested = Signal()
 
@@ -120,6 +121,11 @@ class TrayIcon(QObject):
 
         self._menu.addSeparator()
 
+        self._update_action = QAction("", self._menu)
+        self._update_action.triggered.connect(self.update_requested.emit)
+        self._update_action.setVisible(False)
+        self._menu.addAction(self._update_action)
+
         about = QAction("About...", self._menu)
         about.triggered.connect(self.about_requested.emit)
         self._menu.addAction(about)
@@ -149,6 +155,11 @@ class TrayIcon(QObject):
     def update_status(self, text: str):
         now = datetime.now().strftime("%H:%M")
         self._status_action.setText(f"Last sync: {now} - {text}")
+
+    @Slot(str)
+    def set_update_available(self, version: str):
+        self._update_action.setText(f"Update to v{version}...")
+        self._update_action.setVisible(True)
 
     @Slot(bool)
     def _toggle_autostart(self, enabled: bool):
