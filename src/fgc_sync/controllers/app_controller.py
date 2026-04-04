@@ -97,10 +97,7 @@ class AppController:
             self._start_poll_timer()
             self._sync.request_sync()
         elif not self._config.is_setup_complete:
-            self._tray.show_notification(
-                "Setup Incomplete",
-                "Right-click the tray icon and open Settings to finish setup.",
-            )
+            self._quit()
 
     def _start_watcher(self):
         sv_path = self._config.saved_variables_path
@@ -196,6 +193,12 @@ class AppController:
             return
 
         if result == "exit":
+            QMessageBox.information(
+                None, "Update Complete",
+                "The update has been downloaded and will be applied when "
+                "the application closes.\n\nPlease restart the application "
+                "to use the new version.",
+            )
             self._quit()
         else:
             QMessageBox.information(None, "Update Complete", result)

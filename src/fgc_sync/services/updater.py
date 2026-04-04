@@ -18,6 +18,21 @@ log = logging.getLogger(__name__)
 
 _API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _PIP_URL = f"git+https://github.com/{GITHUB_REPO}.git"
+
+
+def cleanup_after_update():
+    """Remove leftover .bak and .update files from a previous update."""
+    if not getattr(sys, "frozen", False):
+        return
+    exe = Path(sys.executable)
+    for suffix in (".exe.bak", ".exe.update"):
+        leftover = exe.with_suffix(suffix)
+        if leftover.exists():
+            try:
+                leftover.unlink()
+                log.info("Cleaned up %s", leftover.name)
+            except OSError:
+                pass
 _HEADERS = {"User-Agent": f"FGC-Sync/{__version__}"}
 
 
@@ -131,20 +146,19 @@ def _update_exe(info: UpdateInfo) -> str:
     exe_path = Path(sys.executable)
     update_path = exe_path.with_suffix(".exe.update")
 
-    # Download with progress
+    # Download (allow_redirects for GitHub CDN, generous timeout)
     log.info("Downloading %s", info.download_url)
-    resp = requests.get(info.download_url, headers=_HEADERS, stream=True, timeout=60)
+    resp = requests.get(
+        info.download_url, headers=_HEADERS,
+        stream=True, timeout=(15, 300), allow_redirects=True,
+    )
     resp.raise_for_status()
 
+    expected_size = int(resp.headers.get("content-length", 0)) or None
     with open(update_path, "wb") as f:
         for chunk in resp.iter_content(chunk_size=65536):
             f.write(chunk)
 
-    # Verify download size matches
-    expected_size = None
-    for header in ("content-length",):
-        if header in resp.headers:
-            expected_size = int(resp.headers[header])
     actual_size = update_path.stat().st_size
     if expected_size and actual_size != expected_size:
         update_path.unlink()
@@ -152,14 +166,33 @@ def _update_exe(info: UpdateInfo) -> str:
             f"Download size mismatch: expected {expected_size}, got {actual_size}"
         )
 
-    # Write the swap script
+    if actual_size < 1_000_000:
+        update_path.unlink()
+        raise RuntimeError(
+            f"Downloaded file too small ({actual_size} bytes), aborting update."
+        )
+
+    # Write the swap script — renames old exe to .bak, puts new one in place.
+    # Does NOT auto-restart to avoid DLL loading issues with PyInstaller.
     script_path = Path(tempfile.gettempdir()) / "fgc_sync_update.cmd"
+    backup_path = exe_path.with_suffix(".exe.bak")
     script = (
         '@echo off\r\n'
-        'timeout /t 2 /nobreak >nul\r\n'
-        f'del "{exe_path}"\r\n'
+        'timeout /t 5 /nobreak >nul\r\n'
+        f'if exist "{backup_path}" del "{backup_path}"\r\n'
+        f'move "{exe_path}" "{backup_path}"\r\n'
+        f'if errorlevel 1 (\r\n'
+        f'  del "{update_path}"\r\n'
+        f'  del "%~f0"\r\n'
+        f'  exit /b 1\r\n'
+        f')\r\n'
         f'move "{update_path}" "{exe_path}"\r\n'
-        f'start "" "{exe_path}"\r\n'
+        f'if errorlevel 1 (\r\n'
+        f'  move "{backup_path}" "{exe_path}"\r\n'
+        f'  del "%~f0"\r\n'
+        f'  exit /b 1\r\n'
+        f')\r\n'
+        f'del "{backup_path}"\r\n'
         f'del "%~f0"\r\n'
     )
     script_path.write_text(script, encoding="ascii")
