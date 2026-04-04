@@ -199,7 +199,15 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     discord.clear_members_cache()
     discord.clear_channel_cache()
 
+    now = datetime.now(ZoneInfo(timezone))
+
     for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
+        # Skip expired events — they are only in all_events so the
+        # cleanup phase below can evaluate and delete their channels.
+        event_dt = _event_to_datetime(evt, timezone)
+        if (now - event_dt).total_seconds() / 3600 >= 24:
+            continue
+
         existing = mapping.get(event_id)
         content_hash = compute_event_hash(evt)
         confirmed_names = sorted(
@@ -280,7 +288,6 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             ids_to_remove.append(event_id)
 
     # Clean up: delete channels for events that happened 24+ hours ago
-    now = datetime.now(ZoneInfo(timezone))
     for event_id, info in mapping.items():
         if event_id in ids_to_remove:
             continue
