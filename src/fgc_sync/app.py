@@ -29,7 +29,21 @@ def main():
 
 
 def _main():
-    config = Config()
+    import argparse
+    parser = argparse.ArgumentParser(description="FGC Calendar Sync")
+    parser.add_argument(
+        "--config-dir", type=str, default=None,
+        help="Use a custom config directory (for testing or multi-user setups)",
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.config_dir:
+        from pathlib import Path
+        config_dir = Path(args.config_dir)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config = Config(config_dir / "config.json")
+    else:
+        config = Config()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -40,6 +54,9 @@ def _main():
         ],
     )
     log = logging.getLogger(__name__)
+
+    from fgc_sync.services.updater import cleanup_after_update
+    cleanup_after_update()
 
     from PySide6.QtWidgets import QApplication
 

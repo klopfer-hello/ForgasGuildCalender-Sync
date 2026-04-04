@@ -33,6 +33,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --onefile --windowed ^
             --name "FGC-Sync" ^
+            --icon "resources/app.ico" ^
             --add-data "resources;resources" ^
             --add-data "pyproject.toml;." ^
             --hidden-import "PIL" ^

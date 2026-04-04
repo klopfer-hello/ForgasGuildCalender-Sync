@@ -1,4 +1,4 @@
-"""First-run setup wizard: WoW path, Google login, calendar selection."""
+"""First-run setup wizard: WoW path, Discord, Google login, calendar."""
 
 from __future__ import annotations
 
@@ -24,6 +24,13 @@ from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import list_guild_keys, parse_saved_variables
 
 log = logging.getLogger(__name__)
+
+
+# Page IDs
+_PAGE_WOW = 0
+_PAGE_DISCORD = 1
+_PAGE_GOOGLE_LOGIN = 2
+_PAGE_CALENDAR = 3
 
 
 class WowPathPage(QWizardPage):
@@ -122,14 +129,80 @@ class WowPathPage(QWizardPage):
         return True
 
 
+class DiscordPage(QWizardPage):
+    def __init__(self, config: Config, parent=None):
+        super().__init__(parent)
+        self._config = config
+        self.setTitle("Discord Bot (optional)")
+        self.setSubTitle(
+            "Enter your Discord bot credentials to sync raid rosters. "
+            "Press Skip to configure this later in Settings."
+        )
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Bot Token:"))
+        self._token_edit = QLineEdit()
+        self._token_edit.setPlaceholderText("Paste your bot token...")
+        self._token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self._token_edit)
+
+        layout.addWidget(QLabel("Server (Guild) ID:"))
+        self._guild_edit = QLineEdit()
+        self._guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
+        layout.addWidget(self._guild_edit)
+
+        layout.addWidget(QLabel("Category ID:"))
+        self._category_edit = QLineEdit()
+        self._category_edit.setPlaceholderText("Right-click category → Copy Category ID")
+        layout.addWidget(self._category_edit)
+
+        layout.addStretch()
+
+        # Pre-fill existing values
+        if v := self._config.get("discord_bot_token", ""):
+            self._token_edit.setText(v)
+        if v := self._config.get("discord_guild_id", ""):
+            self._guild_edit.setText(v)
+        if v := self._config.get("discord_category_id", ""):
+            self._category_edit.setText(v)
+
+    def validatePage(self) -> bool:
+        if self.wizard().skipped_page:
+            return True
+
+        token = self._token_edit.text().strip()
+        guild_id = self._guild_edit.text().strip()
+        category_id = self._category_edit.text().strip()
+
+        # All or nothing — if any field is filled, all must be
+        filled = [bool(token), bool(guild_id), bool(category_id)]
+        if any(filled) and not all(filled):
+            QMessageBox.warning(
+                self, "Incomplete",
+                "Please fill all three fields or press Skip.",
+            )
+            return False
+
+        if all(filled):
+            self._config.set("discord_bot_token", token)
+            self._config.set("discord_guild_id", guild_id)
+            self._config.set("discord_category_id", category_id)
+
+        return True
+
+
 class GoogleLoginPage(QWizardPage):
     def __init__(self, config: Config, gcal: GoogleCalendarClient, parent=None):
         super().__init__(parent)
         self._config = config
         self._gcal = gcal
         self._authenticated = False
-        self.setTitle("Google Account")
-        self.setSubTitle("Login with Google to access your calendar.")
+        self.setTitle("Google Calendar (optional)")
+        self.setSubTitle(
+            "Login with Google to sync raids to your calendar. "
+            "Press Skip to configure this later in Settings."
+        )
 
         layout = QVBoxLayout(self)
         self._status_label = QLabel("Not logged in")
@@ -167,8 +240,13 @@ class GoogleLoginPage(QWizardPage):
             self._status_label.setText("Login failed")
 
     def validatePage(self) -> bool:
+        if self.wizard().skipped_page:
+            return True
         if not self._authenticated:
-            QMessageBox.warning(self, "Not Logged In", "Please login with Google first.")
+            QMessageBox.warning(
+                self, "Not Logged In",
+                "Please login with Google or press Skip.",
+            )
             return False
         return True
 
@@ -214,6 +292,8 @@ class CalendarSelectPage(QWizardPage):
             QMessageBox.warning(self, "Error", f"Could not load calendars:\n{e}")
 
     def validatePage(self) -> bool:
+        if self.wizard().skipped_page:
+            return True
         if self._calendar_combo.currentIndex() < 0 or not self._calendars:
             QMessageBox.warning(self, "No Calendar", "Please select a calendar.")
             return False
@@ -222,15 +302,44 @@ class CalendarSelectPage(QWizardPage):
 
 
 class SetupWizard(QWizard):
+    # Set to True momentarily by _on_skip so validatePage() passes
+    skipped_page = False
+
     def __init__(self, config: Config, gcal: GoogleCalendarClient, parent=None):
         super().__init__(parent)
         self.setWindowTitle("FGC Calendar Sync - Setup")
         self.setMinimumSize(500, 380)
-        self.addPage(WowPathPage(config, self))
-        self.addPage(GoogleLoginPage(config, gcal, self))
-        self.addPage(CalendarSelectPage(config, gcal, self))
+
+        self.setPage(_PAGE_WOW, WowPathPage(config, self))
+        self.setPage(_PAGE_DISCORD, DiscordPage(config, self))
+        self.setPage(_PAGE_GOOGLE_LOGIN, GoogleLoginPage(config, gcal, self))
+        self.setPage(_PAGE_CALENDAR, CalendarSelectPage(config, gcal, self))
+
+        self.setButtonText(QWizard.WizardButton.CustomButton1, "Skip")
+        self.setOption(QWizard.WizardOption.HaveCustomButton1, True)
+        self.customButtonClicked.connect(self._on_skip)
+        self.currentIdChanged.connect(self._on_page_changed)
+
+    def _on_page_changed(self, page_id: int):
+        # Reset skip flag when navigating normally
+        self.skipped_page = False
+        is_optional = page_id in (
+            _PAGE_DISCORD, _PAGE_GOOGLE_LOGIN, _PAGE_CALENDAR,
+        )
+        self.button(QWizard.WizardButton.CustomButton1).setVisible(is_optional)
+
+    def _on_skip(self):
+        self.skipped_page = True
+        current = self.currentId()
+        if current == _PAGE_DISCORD:
+            # Skip to Google login page
+            self.next()
+        elif current in (_PAGE_GOOGLE_LOGIN, _PAGE_CALENDAR):
+            # Skip Google entirely — finish the wizard
+            self.accept()
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.button(QWizard.WizardButton.CustomButton1).setVisible(False)
         from fgc_sync.views.styles import apply_acrylic
         apply_acrylic(self)
