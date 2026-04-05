@@ -50,6 +50,9 @@ def _slugify(text: str, max_len: int = 90) -> str:
     return slug[:max_len]
 
 
+_HTTP_TIMEOUT = 30  # seconds for all Discord API calls
+
+
 class DiscordPoster:
     """Synchronous Discord REST client with per-event channel management."""
 
@@ -269,7 +272,9 @@ class DiscordPoster:
         files = {"files[0]": (filename, image_bytes, "image/png")}
         payload = {"content": content} if content else {}
         for attempt in range(3):
-            resp = self._session.request(method, url, data=payload, files=files)
+            resp = self._session.request(
+                method, url, data=payload, files=files, timeout=_HTTP_TIMEOUT,
+            )
             if resp.status_code == 429:
                 retry_after = resp.json().get("retry_after", 1.0)
                 log.warning("Discord rate limited, retrying after %.1fs", retry_after)
@@ -285,7 +290,9 @@ class DiscordPoster:
         headers = kwargs.pop("headers", {})
         headers["Content-Type"] = "application/json"
         for attempt in range(3):
-            resp = self._session.request(method, url, headers=headers, **kwargs)
+            resp = self._session.request(
+                method, url, headers=headers, timeout=_HTTP_TIMEOUT, **kwargs,
+            )
             if resp.status_code == 429:
                 retry_after = resp.json().get("retry_after", 1.0)
                 log.warning("Discord rate limited, retrying after %.1fs", retry_after)

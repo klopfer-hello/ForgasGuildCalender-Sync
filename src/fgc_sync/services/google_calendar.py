@@ -6,14 +6,17 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httplib2
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_httplib2 import AuthorizedHttp
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
+_HTTP_TIMEOUT = 30  # seconds for all Google API calls
 
 
 class GoogleCalendarClient:
@@ -183,7 +186,8 @@ class GoogleCalendarClient:
         if self._service is None:
             if not self._creds:
                 raise RuntimeError("Not authenticated")
-            self._service = build("calendar", "v3", credentials=self._creds)
+            http = AuthorizedHttp(self._creds, http=httplib2.Http(timeout=_HTTP_TIMEOUT))
+            self._service = build("calendar", "v3", http=http)
         return self._service
 
     def _save_token(self):
