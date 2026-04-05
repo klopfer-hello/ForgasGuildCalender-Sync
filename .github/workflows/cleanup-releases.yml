@@ -1,12 +1,14 @@
 name: Cleanup Old Releases
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Build and Release"]
+    types: [completed]
 
 jobs:
   delete-old-releases:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: Nats-ji/delete-old-releases@v1
         with:
