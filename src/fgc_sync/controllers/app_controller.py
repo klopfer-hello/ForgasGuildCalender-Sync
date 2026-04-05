@@ -246,7 +246,19 @@ class AppController:
 
         if self._about_box:
             self._about_box.setText(text)
+            if info and info.is_newer:
+                from PySide6.QtWidgets import QMessageBox
+                update_btn = self._about_box.addButton(
+                    "Update Now", QMessageBox.ButtonRole.AcceptRole,
+                )
+                update_btn.clicked.connect(self._about_update_now)
             self._about_box.adjustSize()
+
+    def _about_update_now(self):
+        if self._about_box:
+            self._about_box.close()
+            self._about_box = None
+        self._perform_update()
 
     def _on_sync_done(self, result: SyncResult):
         status = str(result)
