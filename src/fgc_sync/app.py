@@ -53,6 +53,10 @@ def _main():
             logging.FileHandler(config.app_data_dir / "sync.log", encoding="utf-8"),
         ],
     )
+    # Enable debug logging for our own modules to diagnose sync issues
+    logging.getLogger("fgc_sync").setLevel(logging.DEBUG)
+    # Suppress noisy googleapiclient cache warning
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
     log = logging.getLogger(__name__)
 
     from fgc_sync.services.updater import cleanup_after_update

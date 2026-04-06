@@ -204,6 +204,8 @@ def main():
             logging.FileHandler(config.app_data_dir / "sync.log", encoding="utf-8"),
         ],
     )
+    logging.getLogger("fgc_sync").setLevel(logging.DEBUG)
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
     log = logging.getLogger(__name__)
 
     if args.setup or not config.is_setup_complete:

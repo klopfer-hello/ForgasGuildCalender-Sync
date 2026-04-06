@@ -16,8 +16,10 @@ from fgc_sync.services.sync_engine import compute_sync_plan, execute_discord_syn
 log = logging.getLogger(__name__)
 
 
-class _SyncWorker(QObject):
-    finished = Signal(object)
+class _SyncThread(QThread):
+    """Runs sync work directly in the thread — no event loop needed."""
+
+    sync_done = Signal(object)
 
     def __init__(self, config: Config, gcal: GoogleCalendarClient, discord: DiscordPoster | None = None):
         super().__init__()
@@ -52,7 +54,7 @@ class _SyncWorker(QObject):
                 result.errors.append(f"Discord sync failed: {e}")
                 log.error("Discord sync failed: %s", e)
 
-        self.finished.emit(result)
+        self.sync_done.emit(result)
 
 
 _SYNC_TIMEOUT = 120  # seconds before a stuck sync thread is force-reset
@@ -68,8 +70,7 @@ class SyncController(QObject):
         self._config = config
         self._gcal = gcal
         self._discord = discord
-        self._thread: QThread | None = None
-        self._worker: _SyncWorker | None = None
+        self._thread: _SyncThread | None = None
         self._sync_started_at: float = 0
 
     @property
@@ -94,12 +95,9 @@ class SyncController(QObject):
             self._gcal.load_credentials()
 
         self._sync_started_at = time.monotonic()
-        self._thread = QThread()
-        self._worker = _SyncWorker(self._config, self._gcal, self._discord)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.finished.connect(self._thread.quit)
+        log.debug("Starting sync thread")
+        self._thread = _SyncThread(self._config, self._gcal, self._discord)
+        self._thread.sync_done.connect(self._on_finished)
         self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
 
@@ -110,17 +108,17 @@ class SyncController(QObject):
     def _force_reset(self):
         """Force-reset a stuck sync thread so the next sync can proceed."""
         if self._thread is not None:
-            self._thread.quit()
             if not self._thread.wait(2000):  # 2s grace period
-                log.warning("Sync thread did not quit, terminating")
+                log.warning("Sync thread did not finish, terminating")
                 self._thread.terminate()
                 self._thread.wait(1000)
-        self._worker = None
         self._thread = None
 
     def _on_finished(self, result: SyncResult):
+        elapsed = time.monotonic() - self._sync_started_at
+        log.debug("Sync worker finished in %.1fs", elapsed)
         self.sync_completed.emit(result)
 
     def _on_thread_done(self):
-        self._worker = None
+        log.debug("Sync thread cleaned up")
         self._thread = None

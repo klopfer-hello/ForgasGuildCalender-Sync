@@ -109,7 +109,9 @@ class DiscordPoster:
 
     def find_existing_channel(self, event_id: str) -> dict | None:
         """Search category channels for one that has a roster image for this event."""
-        for channel in self._get_category_channels():
+        channels = self._get_category_channels()
+        log.debug("Scanning %d category channels for event %s", len(channels), event_id)
+        for channel in channels:
             ch_id = channel["id"]
             # Check pinned or recent messages for a matching roster filename
             try:
@@ -223,6 +225,7 @@ class DiscordPoster:
     def _fetch_guild_members(self) -> list[dict]:
         members: list[dict] = []
         after = "0"
+        _start = time.monotonic()
         while True:
             batch = self._request(
                 "GET",
@@ -235,6 +238,7 @@ class DiscordPoster:
             if len(batch) < 1000:
                 break
             after = batch[-1]["user"]["id"]
+        log.debug("Fetched %d guild members in %.1fs", len(members), time.monotonic() - _start)
         return members
 
     def _get_members(self) -> list[dict]:
