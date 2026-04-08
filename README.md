@@ -55,6 +55,12 @@ Subsequent runs perform a single sync cycle and exit. Use `--discord-only` to sk
 fgc-sync-cli --discord-only
 ```
 
+Use `--force` to delete every Discord channel tracked in the local mapping and recreate them from scratch (useful for recovering from inconsistent state):
+
+```bash
+fgc-sync-cli --force
+```
+
 #### Cron setup
 
 Sync every 5 minutes:

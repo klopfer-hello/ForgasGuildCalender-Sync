@@ -84,16 +84,23 @@ src/fgc_sync/
 Runs after Google Calendar sync on every sync cycle. Uses `discord_message_mapping` in config.
 Only posts events within the next 7 days that have a confirmed roster (group assignments).
 
-1. Collects all future guild events (not filtered by personal participation)
-2. For each event:
-   - **Not in mapping** → create private channel, post roster image, ping all confirmed members
-   - **In mapping, content hash changed, new confirmed** → update image, update channel permissions, ping only newly confirmed members
-   - **In mapping, content hash changed, no new confirmed** → update image only
-   - **In mapping, hash unchanged** → skip
-3. Events no longer in WoW (or outside 7-day window) → delete channel
-4. Events that happened 24+ hours ago → delete channel
-5. Multi-client safe: content hash embedded in image filename, channels scanned before creating
+1. **Stale-data guard**: read local SavedVariables file mtime; scan recent messages of all category channels for the highest `_t<unix_ts>` embedded in any roster image filename. If local mtime < remote max → skip the entire Discord sync (another client has newer data; overwriting would cause flapping images and duplicate pings).
+2. Collect all future guild events (not filtered by personal participation)
+3. For each event:
+   - **Not in mapping** → call `find_existing_channel` (matches by deterministic channel name first, then attachment scan for legacy channels). If found → adopt and seed `pinged` with the current roster. Otherwise → create channel, post roster image.
+   - **In mapping, content hash changed** → update image in place (PATCH), or post a new image if the original was deleted
+   - **In mapping, hash unchanged** → fall through to ping retry only
+   - **Ping retry**: compute `to_ping = current_confirmed - pinged`. Ping anyone in the diff (label "Confirmed" for new channels, "Newly confirmed" otherwise). `ping_members` returns the subset of names that actually resolved to a Discord member; only those are added to `pinged`. Names that fail to resolve (e.g. user not yet in the Discord server) are retried on the next sync.
+4. Events no longer in WoW (or in `deletedEvents`) → delete channel
+5. Events that happened 24+ hours ago → delete channel
 6. Persist `discord_message_mapping` to config
+
+**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Channel-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones.
+
+**Mapping schema** (`discord_message_mapping[event_id]`):
+- `channel_id`: Discord channel id
+- `message_ids`: `{image_id, hash, sv_mtime}`
+- `pinged`: list of character names that have been successfully pinged so far. Legacy entries may use `confirmed` instead — read code falls back automatically.
 
 ### Discord Roster Images (`roster_image.py`)
 
@@ -133,6 +140,8 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 - **File watcher**: watchdog monitors SavedVariables directory, 2s debounce
 - **Poll timer**: every 5 minutes as fallback
 - **Manual**: "Sync Now" from tray menu
+
+The tray menu also has **"Open Log File"** which opens `%APPDATA%/ForgasGuildCalendar-Sync/sync.log` with the OS default handler.
 
 ### Linux / Headless CLI
 
