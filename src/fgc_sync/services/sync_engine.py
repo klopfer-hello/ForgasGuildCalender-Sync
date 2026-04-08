@@ -243,55 +243,63 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     existing = {
                         "channel_id": remote["channel_id"],
                         "message_ids": remote,
-                        # Seed confirmed list with the current roster so the
-                        # "newly confirmed" diff below is empty on first adoption
-                        # — otherwise every member would be pinged again.
-                        "confirmed": confirmed_names,
+                        # Seed pinged with the current roster on adoption so we
+                        # don't re-ping members that the original creator client
+                        # already pinged.
+                        "pinged": list(confirmed_names),
                     }
-                    if remote.get("hash") == content_hash:
-                        mapping[event_id] = {
-                            "channel_id": remote["channel_id"],
-                            "message_ids": remote,
-                            "confirmed": confirmed_names,
-                        }
-                        result.skipped += 1
-                        log.info("Discord: adopted existing channel for %s", evt.title)
-                        continue
+                    log.info("Discord: adopted existing channel for %s", evt.title)
 
             channel_id = (existing or {}).get("channel_id")
             msg_ids = (existing or {}).get("message_ids")
+            # Backward compat: legacy entries used "confirmed" for the full roster
+            prev_pinged = set(
+                (existing or {}).get("pinged",
+                (existing or {}).get("confirmed", []))
+            )
+            is_new_channel = False
 
             if channel_id is None:
-                # New event — create channel, post image, ping all confirmed
+                # New event — create channel and post image
                 channel_id = discord.create_event_channel(evt)
                 msg_ids = discord.post_event(channel_id, evt, timezone)
-                discord.ping_members(channel_id, set(confirmed_names), "Confirmed")
+                prev_pinged = set()
+                is_new_channel = True
                 result.created += 1
             elif msg_ids and msg_ids.get("hash") == content_hash:
-                # Already up to date
-                result.skipped += 1
-                continue
+                # Image up to date — fall through to ping retry below
+                pass
             else:
                 # Content changed — update image
-                old_confirmed = set((existing or {}).get("confirmed", []))
-                new_confirmed = set(confirmed_names)
-                newly_added = new_confirmed - old_confirmed
-
                 if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
                     msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone)
-                    result.updated += 1
                 else:
                     msg_ids = discord.post_event(channel_id, evt, timezone)
-                    result.updated += 1
+                result.updated += 1
 
-                if newly_added:
-                    discord.ping_members(channel_id, newly_added, "Newly confirmed")
-                    result.updated += 1
+            # Ping any confirmed members not yet successfully pinged. This
+            # also retries members whose Discord account did not exist at
+            # the time of the original ping (late server joiners).
+            to_ping = set(confirmed_names) - prev_pinged
+            newly_pinged: set[str] = set()
+            if to_ping:
+                label = "Confirmed" if is_new_channel else "Newly confirmed"
+                newly_pinged = discord.ping_members(channel_id, to_ping, label)
+            pinged = prev_pinged | newly_pinged
+
+            unchanged = (
+                not is_new_channel
+                and msg_ids
+                and msg_ids.get("hash") == content_hash
+                and not newly_pinged
+            )
+            if unchanged:
+                result.skipped += 1
 
             mapping[event_id] = {
                 "channel_id": channel_id,
                 "message_ids": msg_ids,
-                "confirmed": confirmed_names,
+                "pinged": sorted(pinged),
             }
             _evt_elapsed = _time.monotonic() - _evt_start
             if _evt_elapsed > 5:

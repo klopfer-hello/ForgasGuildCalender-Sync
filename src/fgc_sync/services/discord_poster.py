@@ -226,13 +226,21 @@ class DiscordPoster:
 
     def ping_members(
         self, channel_id: str, names: set[str], label: str = "Confirmed",
-    ):
-        """Post a one-off ping message for the given character names."""
+    ) -> set[str]:
+        """Post a one-off ping message for the given character names.
+
+        Returns the subset of names that resolved to a Discord member and
+        were actually mentioned. Names that did not resolve are not returned,
+        so the caller can retry them on a later sync (e.g. when the user
+        finally joins the Discord server).
+        """
         mentions = []
+        resolved: set[str] = set()
         for name in sorted(names):
             user_id = self._find_member_id(name)
             if user_id:
                 mentions.append(f"<@{user_id}>")
+                resolved.add(name)
 
         if mentions:
             self._request(
@@ -241,6 +249,7 @@ class DiscordPoster:
                 json={"content": f"{label}: " + " ".join(mentions)},
             )
             log.info("Discord: pinged %d members (%s)", len(mentions), label)
+        return resolved
 
     def message_exists(self, channel_id: str, message_ids: dict | str) -> bool:
         """Check if the image message still exists."""
