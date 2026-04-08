@@ -309,6 +309,9 @@ class SetupWizard(QWizard):
         super().__init__(parent)
         self.setWindowTitle("FGC Sync - Setup")
         self.setMinimumSize(500, 380)
+        # Use ModernStyle so QSS is honored (Aero/Vista native style on
+        # Windows ignores stylesheet colors for QLineEdit/QComboBox).
+        self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
 
         self.setPage(_PAGE_WOW, WowPathPage(config, self))
         self.setPage(_PAGE_DISCORD, DiscordPage(config, self))
