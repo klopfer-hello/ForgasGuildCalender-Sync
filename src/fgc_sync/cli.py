@@ -163,6 +163,12 @@ def main():
         help="Only sync to Discord, skip Google Calendar",
     )
     parser.add_argument(
+        "--force", action="store_true",
+        help="Force Discord resync: delete all tracked channels and clear "
+             "the mapping before syncing, so every channel is recreated and "
+             "every confirmed member is re-pinged",
+    )
+    parser.add_argument(
         "--config-dir", type=str, default=None,
         help="Use a custom config directory (for testing or multi-user setups)",
     )
@@ -232,6 +238,18 @@ def main():
     guild = config.get("discord_guild_id", "")
     if token and category and guild:
         discord = DiscordPoster(token, category, guild)
+        if args.force:
+            mapping = config.get("discord_message_mapping", {})
+            log.info("Force resync: deleting %d tracked channel(s)", len(mapping))
+            for event_id, info in mapping.items():
+                ch_id = info.get("channel_id")
+                if not ch_id:
+                    continue
+                try:
+                    discord.delete_channel(ch_id)
+                except Exception as e:
+                    log.error("Force resync: failed to delete channel %s: %s", ch_id, e)
+            config.set("discord_message_mapping", {})
         result = execute_discord_sync(config, discord)
         log.info("Discord: %s", result)
         if result.errors:
