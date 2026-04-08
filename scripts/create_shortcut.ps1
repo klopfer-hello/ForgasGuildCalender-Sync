@@ -1,4 +1,4 @@
-# Creates a Windows Startup shortcut for FGC Calendar Sync.
+# Creates a Windows Startup shortcut for FGC Sync.
 # Assumes the package is installed in a venv at .venv/ next to this script's parent dir.
 
 $scriptDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -15,7 +15,7 @@ $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut("$startup\FGCCalendarSync.lnk")
 $sc.TargetPath = $exe
 $sc.WorkingDirectory = $scriptDir
-$sc.Description = "FGC Calendar Sync"
+$sc.Description = "FGC Sync"
 $sc.Save()
 
 Write-Host "Startup shortcut created at: $startup\FGCCalendarSync.lnk" -ForegroundColor Green

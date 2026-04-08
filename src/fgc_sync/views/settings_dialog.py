@@ -34,7 +34,7 @@ class SettingsDialog(QDialog):
         self._gcal = gcal
         self._calendars: list[dict] = []
 
-        self.setWindowTitle("FGC Calendar Sync - Settings")
+        self.setWindowTitle("FGC Sync - Settings")
         self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)

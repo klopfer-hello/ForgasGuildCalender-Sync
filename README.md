@@ -1,4 +1,4 @@
-# FGC Calendar Sync
+# FGC Sync
 
 Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) WoW addon. Reads raid/event data from the addon's SavedVariables and offers two independent sync features — use either or both:
 

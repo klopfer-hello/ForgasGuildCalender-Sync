@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-APP_NAME = "FGC Calendar Sync"
+APP_NAME = "FGC Sync"
 GITHUB_REPO = "klopfer-hello/ForgasGuildCalender-Sync"
 PROJECT_URL = f"https://github.com/{GITHUB_REPO}"
 

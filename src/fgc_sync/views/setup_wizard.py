@@ -307,7 +307,7 @@ class SetupWizard(QWizard):
 
     def __init__(self, config: Config, gcal: GoogleCalendarClient, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("FGC Calendar Sync - Setup")
+        self.setWindowTitle("FGC Sync - Setup")
         self.setMinimumSize(500, 380)
 
         self.setPage(_PAGE_WOW, WowPathPage(config, self))

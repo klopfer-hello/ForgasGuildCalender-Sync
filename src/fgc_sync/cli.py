@@ -138,7 +138,7 @@ def _run_cli_setup(config: Config) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FGC Calendar Sync — headless CLI")
+    parser = argparse.ArgumentParser(description="FGC Sync — headless CLI")
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}",
     )

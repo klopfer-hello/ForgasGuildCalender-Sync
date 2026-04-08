@@ -30,7 +30,7 @@ def main():
 
 def _main():
     import argparse
-    parser = argparse.ArgumentParser(description="FGC Calendar Sync")
+    parser = argparse.ArgumentParser(description="FGC Sync")
     parser.add_argument(
         "--config-dir", type=str, default=None,
         help="Use a custom config directory (for testing or multi-user setups)",
@@ -69,7 +69,7 @@ def _main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    app.setApplicationName("FGC Calendar Sync")
+    app.setApplicationName("FGC Sync")
     app.setStyleSheet(get_stylesheet())
 
     # Store controller on the QApplication to prevent garbage collection

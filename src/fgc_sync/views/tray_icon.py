@@ -52,7 +52,7 @@ def set_autostart(enabled: bool):
                 "$ws = New-Object -ComObject WScript.Shell; "
                 f"$sc = $ws.CreateShortcut('{shortcut}'); "
                 f"$sc.TargetPath = '{exe}'; "
-                "$sc.Description = 'FGC Calendar Sync'; "
+                "$sc.Description = 'FGC Sync'; "
                 "$sc.Save()"
             )
             subprocess.run(
@@ -92,7 +92,7 @@ class TrayIcon(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._tray = QSystemTrayIcon(self)
-        self._tray.setToolTip("FGC Calendar Sync")
+        self._tray.setToolTip("FGC Sync")
 
         self._menu = QMenu()
 
