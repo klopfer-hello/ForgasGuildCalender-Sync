@@ -243,6 +243,10 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     existing = {
                         "channel_id": remote["channel_id"],
                         "message_ids": remote,
+                        # Seed confirmed list with the current roster so the
+                        # "newly confirmed" diff below is empty on first adoption
+                        # — otherwise every member would be pinged again.
+                        "confirmed": confirmed_names,
                     }
                     if remote.get("hash") == content_hash:
                         mapping[event_id] = {
