@@ -219,6 +219,26 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     discord.clear_members_cache()
     discord.clear_channel_cache()
 
+    # Stale-data guard: if another client has already written newer
+    # SavedVariables data to Discord, skip our entire Discord sync to avoid
+    # flapping images and duplicate pings between clients.
+    sv_path = config.saved_variables_path
+    local_sv_mtime = 0
+    if sv_path and sv_path.exists():
+        local_sv_mtime = int(sv_path.stat().st_mtime)
+    try:
+        remote_sv_mtime = discord.get_max_remote_sv_mtime()
+    except Exception as e:
+        log.warning("Discord: failed to read remote sv_mtime: %s", e)
+        remote_sv_mtime = 0
+    if local_sv_mtime and remote_sv_mtime and local_sv_mtime < remote_sv_mtime:
+        log.warning(
+            "Discord: skipping sync — local SavedVariables (%d) is older than "
+            "the most recent remote update (%d). Another client has newer data.",
+            local_sv_mtime, remote_sv_mtime,
+        )
+        return result
+
     now = datetime.now(ZoneInfo(timezone))
 
     for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
@@ -262,7 +282,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             if channel_id is None:
                 # New event — create channel and post image
                 channel_id = discord.create_event_channel(evt)
-                msg_ids = discord.post_event(channel_id, evt, timezone)
+                msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
                 prev_pinged = set()
                 is_new_channel = True
                 result.created += 1
@@ -272,9 +292,9 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             else:
                 # Content changed — update image
                 if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
-                    msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone)
+                    msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone, local_sv_mtime)
                 else:
-                    msg_ids = discord.post_event(channel_id, evt, timezone)
+                    msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
                 result.updated += 1
 
             # Ping any confirmed members not yet successfully pinged. This

@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://discord.com/api/v10"
 
-_FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)\.png")
+_FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
 
 
 def compute_event_hash(event: CalendarEvent) -> str:
@@ -182,15 +182,44 @@ class DiscordPoster:
         """Clear category channels cache. Call once per sync cycle."""
         self._category_channels_cache = None
 
+    def get_max_remote_sv_mtime(self) -> int:
+        """Scan the last few messages of every category channel and return the
+        highest SavedVariables mtime embedded in any roster image filename.
+
+        Used to decide whether the local client has stale data and should
+        skip writing to Discord (avoiding flapping between two clients).
+        """
+        channels = self._get_category_channels()
+        max_ts = 0
+        for ch in channels:
+            ch_id = ch["id"]
+            try:
+                messages = self._request(
+                    "GET", f"/channels/{ch_id}/messages", params={"limit": 5},
+                )
+            except requests.HTTPError:
+                continue
+            for msg in messages or []:
+                for att in msg.get("attachments", []):
+                    m = _FILENAME_PATTERN.match(att.get("filename", ""))
+                    if m and m.group(3):
+                        try:
+                            ts = int(m.group(3))
+                            if ts > max_ts:
+                                max_ts = ts
+                        except ValueError:
+                            pass
+        return max_ts
+
     # -- Message posting --
 
     def post_event(
-        self, channel_id: str, event: CalendarEvent, timezone: str,
+        self, channel_id: str, event: CalendarEvent, timezone: str, sv_mtime: int = 0,
     ) -> dict:
-        """Post roster image in a channel. Returns {image_id, hash}."""
+        """Post roster image in a channel. Returns {image_id, hash, sv_mtime}."""
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
-        filename = f"roster_{event.event_id}_h{content_hash}.png"
+        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
 
         data = self._upload_image(
             "POST",
@@ -202,16 +231,17 @@ class DiscordPoster:
         image_msg_id = data["id"]
         log.info("Discord: posted image %s for %s", image_msg_id, event.title)
 
-        return {"image_id": image_msg_id, "hash": content_hash}
+        return {"image_id": image_msg_id, "hash": content_hash, "sv_mtime": sv_mtime}
 
     def update_event(
         self, channel_id: str, message_ids: dict, event: CalendarEvent, timezone: str,
+        sv_mtime: int = 0,
     ) -> dict:
         """Edit an existing roster image."""
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
         image_msg_id = message_ids["image_id"]
-        filename = f"roster_{event.event_id}_h{content_hash}.png"
+        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
 
         self._upload_image(
             "PATCH",
@@ -221,6 +251,7 @@ class DiscordPoster:
             "",
         )
         message_ids["hash"] = content_hash
+        message_ids["sv_mtime"] = sv_mtime
         log.info("Discord: updated image %s for %s", image_msg_id, event.title)
         return message_ids
 
