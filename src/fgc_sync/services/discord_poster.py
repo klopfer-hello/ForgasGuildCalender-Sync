@@ -107,10 +107,43 @@ class DiscordPoster:
                 return False
             raise
 
-    def find_existing_channel(self, event_id: str) -> dict | None:
-        """Search category channels for one that has a roster image for this event."""
+    def find_existing_channel(self, event: CalendarEvent) -> dict | None:
+        """Search category channels for one that belongs to this event.
+
+        Matches first by deterministic channel name (avoids races where another
+        client just created the channel but has not uploaded the image yet),
+        then falls back to scanning recent messages for a matching roster image.
+        """
+        event_id = event.event_id
+        expected_name = f"{event.date}-{event.time_str}-{_slugify(event.title)}"
         channels = self._get_category_channels()
         log.debug("Scanning %d category channels for event %s", len(channels), event_id)
+
+        # 1. Match by deterministic channel name
+        for channel in channels:
+            if channel.get("name") == expected_name:
+                ch_id = channel["id"]
+                log.info("Discord: matched existing channel by name for %s", event.title)
+                # Try to recover image_id/hash from recent messages; may be empty
+                # if the other client has not uploaded yet — caller will handle.
+                try:
+                    messages = self._request(
+                        "GET", f"/channels/{ch_id}/messages", params={"limit": 5},
+                    )
+                    for msg in messages or []:
+                        for att in msg.get("attachments", []):
+                            m = _FILENAME_PATTERN.match(att.get("filename", ""))
+                            if m and m.group(1) == event_id:
+                                return {
+                                    "channel_id": ch_id,
+                                    "image_id": msg["id"],
+                                    "hash": m.group(2),
+                                }
+                except requests.HTTPError:
+                    pass
+                return {"channel_id": ch_id, "image_id": None, "hash": None}
+
+        # 2. Fall back to attachment scan (legacy channels with non-matching names)
         for channel in channels:
             ch_id = channel["id"]
             # Check pinned or recent messages for a matching roster filename

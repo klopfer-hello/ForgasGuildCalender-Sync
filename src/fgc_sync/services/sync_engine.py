@@ -238,7 +238,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             _evt_start = _time.monotonic()
             # Check if another client already created a channel for this event
             if existing is None:
-                remote = discord.find_existing_channel(event_id)
+                remote = discord.find_existing_channel(evt)
                 if remote:
                     existing = {
                         "channel_id": remote["channel_id"],
@@ -273,7 +273,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 new_confirmed = set(confirmed_names)
                 newly_added = new_confirmed - old_confirmed
 
-                if msg_ids and discord.message_exists(channel_id, msg_ids):
+                if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
                     msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone)
                     result.updated += 1
                 else:
