@@ -11,3 +11,6 @@ build/
 # Google OAuth credentials
 client_secrets.json
 token.json
+
+#Wiki
+wiki/
