@@ -186,8 +186,16 @@ class SettingsDialog(QDialog):
         if cal_id := self._calendar_combo.currentData():
             self._config.set("calendar_id", cal_id)
         self._config.set("discord_bot_token", self._discord_token_edit.text().strip())
-        self._config.set("discord_guild_id", self._discord_guild_edit.text().strip())
-        self._config.set("discord_category_id", self._discord_category_edit.text().strip())
+        new_guild = self._discord_guild_edit.text().strip()
+        new_category = self._discord_category_edit.text().strip()
+        old_guild = self._config.get("discord_guild_id", "")
+        old_category = self._config.get("discord_category_id", "")
+        self._config.set("discord_guild_id", new_guild)
+        self._config.set("discord_category_id", new_category)
+        if new_guild != old_guild or new_category != old_category:
+            # Stale channel/message IDs from the previous server/category would
+            # otherwise cause sync to skip events with matching content hashes.
+            self._config.set("discord_message_mapping", {})
         self.accept()
 
     def showEvent(self, event):
