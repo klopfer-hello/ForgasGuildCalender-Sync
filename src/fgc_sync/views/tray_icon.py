@@ -13,6 +13,8 @@ from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from ..services.config import _app_data_dir
+
 
 def _startup_shortcut_path() -> Path:
     startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
@@ -121,6 +123,12 @@ class TrayIcon(QObject):
 
         self._menu.addSeparator()
 
+        open_log = QAction("Open Log File", self._menu)
+        open_log.triggered.connect(self._open_log_file)
+        self._menu.addAction(open_log)
+
+        self._menu.addSeparator()
+
         self._update_action = QAction("", self._menu)
         self._update_action.triggered.connect(self.update_requested.emit)
         self._update_action.setVisible(False)
@@ -160,6 +168,21 @@ class TrayIcon(QObject):
     def set_update_available(self, version: str):
         self._update_action.setText(f"Update to v{version}...")
         self._update_action.setVisible(True)
+
+    @Slot()
+    def _open_log_file(self):
+        log_path = _app_data_dir() / "sync.log"
+        try:
+            if not log_path.exists():
+                log_path.touch()
+            os.startfile(str(log_path))  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("Failed to open log file")
+            self._tray.showMessage(
+                "Open Log Failed",
+                f"Could not open {log_path}",
+                QSystemTrayIcon.MessageIcon.Warning, 5000,
+            )
 
     @Slot(bool)
     def _toggle_autostart(self, enabled: bool):
