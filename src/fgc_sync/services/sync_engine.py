@@ -199,6 +199,114 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
     return result
 
 
+def compute_discord_sync_plan(
+    config: Config, discord: DiscordPoster,
+) -> SyncPlan:
+    """Compute what Discord sync would do without making any changes.
+
+    Read-only: queries Discord threads and message history but does not
+    create, update, delete, or ping anything.  Does not modify config.
+    """
+    plan = SyncPlan()
+    timezone = config.get("timezone", "Europe/Berlin")
+
+    if not discord.is_configured:
+        return plan
+
+    all_events, deleted_ids, errors = _collect_all_future_events(config)
+    plan.errors.extend(errors)
+    if errors:
+        return plan
+
+    mapping: dict = config.get("discord_message_mapping", {})
+    discord.clear_members_cache()
+    discord.clear_thread_cache()
+
+    now = datetime.now(ZoneInfo(timezone))
+
+    for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
+        event_dt = _event_to_datetime(evt, timezone)
+        if (now - event_dt).total_seconds() / 3600 >= 24:
+            continue
+
+        existing = mapping.get(event_id)
+        content_hash = compute_event_hash(evt)
+        confirmed_names = sorted(
+            p.name for p in evt.participants if p.attendance == Attendance.CONFIRMED
+        )
+        title = evt.title
+        info = f"{evt.confirmed_count} confirmed, {evt.signed_count} signed"
+
+        # Check if another client already created a thread
+        if existing is None:
+            remote = discord.find_existing_thread(evt)
+            if remote:
+                existing = {
+                    "channel_id": remote["channel_id"],
+                    "message_ids": {
+                        "image_id": remote.get("image_id"),
+                        "hash": remote.get("hash"),
+                    },
+                    "pinged": [],
+                }
+
+        channel_id = (existing or {}).get("channel_id")
+        msg_ids = (existing or {}).get("message_ids")
+        prev_pinged = set(
+            (existing or {}).get("pinged",
+            (existing or {}).get("confirmed", []))
+        )
+
+        if channel_id is None:
+            plan.entries.append(SyncPlanEntry(
+                SyncAction.CREATE, event_id, title,
+                evt.date, evt.time_str, evt.type_label,
+                info + f", ping {len(confirmed_names)}",
+            ))
+        else:
+            # Check ping history from the thread
+            history_pinged = discord.get_already_pinged_names(
+                channel_id, set(confirmed_names),
+            )
+            prev_pinged = prev_pinged | history_pinged
+            to_ping = set(confirmed_names) - prev_pinged
+
+            old_hash = (msg_ids or {}).get("hash")
+            if old_hash != content_hash:
+                detail = info
+                if to_ping:
+                    detail += f", ping {len(to_ping)} new"
+                plan.entries.append(SyncPlanEntry(
+                    SyncAction.UPDATE, event_id, title,
+                    evt.date, evt.time_str, evt.type_label, detail,
+                ))
+            elif to_ping:
+                plan.entries.append(SyncPlanEntry(
+                    SyncAction.UPDATE, event_id, title,
+                    evt.date, evt.time_str, evt.type_label,
+                    f"ping {len(to_ping)} new: {', '.join(sorted(to_ping))}",
+                ))
+
+    # Events in mapping but no longer in WoW or deleted
+    for event_id, info_map in mapping.items():
+        if event_id not in all_events or event_id in deleted_ids:
+            plan.entries.append(SyncPlanEntry(
+                SyncAction.DELETE, event_id, event_id, "", "", "",
+            ))
+            continue
+        # Expired (24+ hours ago)
+        evt = all_events.get(event_id)
+        if evt:
+            event_dt = _event_to_datetime(evt, timezone)
+            if (now - event_dt).total_seconds() / 3600 >= 24:
+                plan.entries.append(SyncPlanEntry(
+                    SyncAction.DELETE, event_id, evt.title, evt.date, evt.time_str,
+                    evt.type_label, "expired",
+                ))
+
+    return plan
+
+
 def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     """Sync guild events to Discord — one forum thread per event."""
     import time as _time
@@ -301,16 +409,17 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                         msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
                     result.updated += 1
 
-            # Ping any confirmed members not yet successfully pinged. This
-            # also retries members whose Discord account did not exist at
-            # the time of the original ping (late server joiners).
-            # Check thread history to catch pings from other clients that
+            # Scan thread history to catch pings from other clients that
             # are not reflected in our local mapping.
             if channel_id and not is_new_thread:
                 history_pinged = discord.get_already_pinged_names(
                     channel_id, set(confirmed_names),
                 )
                 prev_pinged = prev_pinged | history_pinged
+
+            # Ping any confirmed members not yet successfully pinged. This
+            # also retries members whose Discord account did not exist at
+            # the time of the original ping (late server joiners).
             to_ping = set(confirmed_names) - prev_pinged
             newly_pinged: set[str] = set()
             if to_ping:

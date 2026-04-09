@@ -21,7 +21,12 @@ from fgc_sync.services.config import (
 )
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
-from fgc_sync.services.sync_engine import execute_discord_sync, execute_sync
+from fgc_sync.services.sync_engine import (
+    compute_discord_sync_plan,
+    compute_sync_plan,
+    execute_discord_sync,
+    execute_sync,
+)
 
 
 def _normalize_path(p: str) -> str:
@@ -182,6 +187,10 @@ def main():
         help="Re-run the interactive setup (reconfigure WoW, Discord, Google)",
     )
     parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what sync would do without making any changes",
+    )
+    parser.add_argument(
         "--discord-only", action="store_true",
         help="Only sync to Discord, skip Google Calendar",
     )
@@ -263,6 +272,57 @@ def main():
         if not _run_cli_setup(config):
             print("Setup cancelled.")
             sys.exit(1)
+
+    # Dry-run mode: show what would happen without making any changes
+    if args.dry_run:
+        plans: list[tuple[str, "SyncPlan"]] = []
+
+        # Google Calendar plan
+        if not args.discord_only and config.is_google_configured:
+            gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
+            if not gcal.load_credentials():
+                gcal = None
+                print("Google credentials not available — plan may be incomplete.\n")
+            else:
+                gcal = gcal
+            plans.append(("Google Calendar", compute_sync_plan(config, gcal)))
+
+        # Discord plan
+        token = config.get("discord_bot_token", "")
+        forum = config.get("discord_forum_id", "")
+        guild = config.get("discord_guild_id", "")
+        if token and forum and guild:
+            discord = DiscordPoster(token, forum, guild)
+            plans.append(("Discord", compute_discord_sync_plan(config, discord)))
+
+        for label, plan in plans:
+            for err in plan.errors:
+                print(f"{label} error: {err}")
+            if plan.errors:
+                continue
+            if not plan.entries:
+                print(f"{label}: no changes.")
+            else:
+                print(f"{label}: {len(plan.creates)} to create, "
+                      f"{len(plan.updates)} to update, "
+                      f"{len(plan.deletes)} to delete\n")
+                act_w = max(len(e.action.value) for e in plan.entries)
+                title_w = max(len(e.title) for e in plan.entries)
+                date_w = max((len(e.date) for e in plan.entries), default=0)
+                time_w = max((len(e.time) for e in plan.entries), default=0)
+                header = (
+                    f"{'Action':<{act_w}}  {'Title':<{title_w}}  "
+                    f"{'Date':<{date_w}}  {'Time':<{time_w}}  Info"
+                )
+                print(header)
+                print("-" * len(header))
+                for e in plan.entries:
+                    print(
+                        f"{e.action.value:<{act_w}}  {e.title:<{title_w}}  "
+                        f"{e.date:<{date_w}}  {e.time:<{time_w}}  {e.participants_info}"
+                    )
+            print()
+        return
 
     # Google Calendar sync (optional)
     if not args.discord_only and config.is_google_configured:
