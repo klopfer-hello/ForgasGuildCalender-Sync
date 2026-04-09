@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from fgc_sync.services.config import SAVED_VARIABLES_FILENAME, Config
+from fgc_sync.services.config import SAVED_VARIABLES_FILENAME, Config, decode_setup_code
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import list_guild_keys, parse_saved_variables
 
@@ -135,11 +135,21 @@ class DiscordPage(QWizardPage):
         self._config = config
         self.setTitle("Discord Bot (optional)")
         self.setSubTitle(
-            "Enter your Discord bot credentials to sync raid rosters. "
+            "Paste a setup code to auto-fill, or enter credentials manually. "
             "Press Skip to configure this later in Settings."
         )
 
         layout = QVBoxLayout(self)
+
+        # Setup code import
+        code_row = QHBoxLayout()
+        self._code_edit = QLineEdit()
+        self._code_edit.setPlaceholderText("Paste setup code (fgc1-...)...")
+        import_btn = QPushButton("Import")
+        import_btn.clicked.connect(self._import_code)
+        code_row.addWidget(self._code_edit)
+        code_row.addWidget(import_btn)
+        layout.addLayout(code_row)
 
         layout.addWidget(QLabel("Bot Token:"))
         self._token_edit = QLineEdit()
@@ -166,6 +176,20 @@ class DiscordPage(QWizardPage):
             self._guild_edit.setText(v)
         if v := self._config.get("discord_forum_id", ""):
             self._forum_edit.setText(v)
+
+    @Slot()
+    def _import_code(self):
+        code = self._code_edit.text().strip()
+        if not code:
+            return
+        values = decode_setup_code(code)
+        if values:
+            self._token_edit.setText(values.get("discord_bot_token", ""))
+            self._guild_edit.setText(values.get("discord_guild_id", ""))
+            self._forum_edit.setText(values.get("discord_forum_id", ""))
+            self._code_edit.clear()
+        else:
+            QMessageBox.warning(self, "Invalid Code", "The setup code is invalid or corrupted.")
 
     def validatePage(self) -> bool:
         if self.wizard().skipped_page:

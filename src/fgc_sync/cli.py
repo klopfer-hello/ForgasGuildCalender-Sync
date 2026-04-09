@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 
 from fgc_sync._version import __version__, about_text
-from fgc_sync.services.config import SAVED_VARIABLES_FILENAME, Config
+from fgc_sync.services.config import (
+    SAVED_VARIABLES_FILENAME,
+    Config,
+    decode_setup_code,
+    encode_setup_code,
+)
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.sync_engine import execute_discord_sync, execute_sync
@@ -87,10 +92,28 @@ def _run_cli_setup(config: Config) -> bool:
     config.set("account_folder", account)
     config.set("guild_key", guild)
 
-    # 4. Discord (optional)
-    if questionary.confirm(
-        "Set up Discord bot integration?", default=False,
-    ).ask():
+    # 4. Discord (optional) — setup code or manual
+    discord_choice = questionary.select(
+        "Discord bot integration:",
+        choices=[
+            questionary.Choice("Paste a setup code", value="code"),
+            questionary.Choice("Enter credentials manually", value="manual"),
+            questionary.Choice("Skip", value="skip"),
+        ],
+    ).ask()
+    if discord_choice == "code":
+        code = questionary.text("Setup code:").ask()
+        if code:
+            values = decode_setup_code(code)
+            if values:
+                for k, v in values.items():
+                    config.set(k, v)
+                print("Discord configured from setup code.")
+            else:
+                print("Invalid setup code. Skipping Discord.")
+        else:
+            print("Skipped — no code entered.")
+    elif discord_choice == "manual":
         token = questionary.password("Bot token:").ask()
         guild_id = questionary.text("Server (Guild) ID:").ask()
         forum_id = questionary.text("Forum Channel ID for raid threads:").ask()
@@ -169,6 +192,11 @@ def main():
              "every confirmed member is re-pinged",
     )
     parser.add_argument(
+        "--export-code", action="store_true",
+        help="Print a setup code that encodes the Discord bot config "
+             "(token, server ID, forum ID) for sharing with other users",
+    )
+    parser.add_argument(
         "--config-dir", type=str, default=None,
         help="Use a custom config directory (for testing or multi-user setups)",
     )
@@ -201,6 +229,20 @@ def main():
         config = Config(config_dir / "config.json")
     else:
         config = Config()
+
+    if args.export_code:
+        token = config.get("discord_bot_token", "")
+        guild_id = config.get("discord_guild_id", "")
+        forum_id = config.get("discord_forum_id", "")
+        if not (token and guild_id and forum_id):
+            print("Error: Discord is not fully configured. "
+                  "Set up discord_bot_token, discord_guild_id, and "
+                  "discord_forum_id first.")
+            sys.exit(1)
+        code = encode_setup_code(config._data)
+        print("Share this setup code with other users:\n")
+        print(code)
+        return
 
     logging.basicConfig(
         level=logging.INFO,

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import zlib
 from pathlib import Path
 
 APP_NAME = "ForgasGuildCalendar-Sync"
@@ -18,6 +20,41 @@ def _app_data_dir() -> Path:
     app_dir = base / APP_NAME
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir
+
+
+_SETUP_CODE_PREFIX = "fgc1-"
+_SETUP_CODE_KEYS = ("discord_bot_token", "discord_guild_id", "discord_forum_id")
+
+
+def encode_setup_code(config_data: dict) -> str:
+    """Encode Discord config values into a compact, obfuscated setup code."""
+    payload = {k: config_data.get(k, "") for k in _SETUP_CODE_KEYS}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    compressed = zlib.compress(raw, level=9)
+    return _SETUP_CODE_PREFIX + base64.urlsafe_b64encode(compressed).decode().rstrip("=")
+
+
+def decode_setup_code(code: str) -> dict | None:
+    """Decode a setup code back into config key/value pairs.
+
+    Returns ``None`` if the code is invalid or corrupted.
+    """
+    code = code.strip()
+    if not code.startswith(_SETUP_CODE_PREFIX):
+        return None
+    b64 = code[len(_SETUP_CODE_PREFIX):]
+    # Restore base64 padding
+    b64 += "=" * (-len(b64) % 4)
+    try:
+        compressed = base64.urlsafe_b64decode(b64)
+        raw = zlib.decompress(compressed)
+        data = json.loads(raw)
+    except Exception:
+        return None
+    # Validate that the expected keys are present and non-empty
+    if not all(data.get(k) for k in _SETUP_CODE_KEYS):
+        return None
+    return {k: data[k] for k in _SETUP_CODE_KEYS}
 
 
 class Config:
