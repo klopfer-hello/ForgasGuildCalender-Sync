@@ -4,7 +4,7 @@ Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/Forg
 
 | Feature | What it does |
 |---------|-------------|
-| **Discord Bot** | Creates per-event channels with rendered roster images, pings confirmed members, auto-deletes channels 24h after the raid |
+| **Discord Bot** | Creates per-event forum threads with rendered roster images, pings confirmed members, auto-deletes threads 24h after the raid |
 | **Google Calendar** | Syncs raids you're signed up for to your personal Google Calendar |
 
 Both features are optional — configure only what you need.
@@ -55,7 +55,7 @@ Subsequent runs perform a single sync cycle and exit. Use `--discord-only` to sk
 fgc-sync-cli --discord-only
 ```
 
-Use `--force` to delete every Discord channel tracked in the local mapping and recreate them from scratch (useful for recovering from inconsistent state):
+Use `--force` to delete every Discord thread tracked in the local mapping and recreate them from scratch (useful for recovering from inconsistent state):
 
 ```bash
 fgc-sync-cli --force
@@ -73,24 +73,26 @@ Sync every 5 minutes:
 
 ### Discord Bot
 
-Creates a channel per raid under a Discord category, posts a rendered roster image, and pings confirmed members. Channels are automatically deleted 24 hours after the raid.
+Creates a forum thread per raid, posts a rendered roster image as the starter message, and pings confirmed members. Threads are automatically deleted 24 hours after the raid.
+
+Thread names follow the format: `Do 10.04. 20:00 — Kara mit Forga`
 
 **Setup:**
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications), create an application
 2. **Bot** tab: create bot, copy token, enable **Server Members Intent**
-3. **OAuth2** → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Channels**, **Read Message History**
+3. **OAuth2** → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Threads**, **Read Message History**
 4. Open the generated URL to invite the bot to your server
-5. Create a **category** in Discord (e.g. "Raids")
-6. In the category's permission settings, give the bot role **Manage Channels** for that category only — this prevents the bot from affecting other channels
-7. Right-click the category → **Copy Category ID** (requires Developer Mode: User Settings → Advanced)
-8. Enter Bot Token, Server ID, and Category ID in the app settings (tray icon → Settings) or `config.json`:
+5. Create a **forum channel** in Discord (e.g. "Raids")
+6. In the forum channel's permission settings, give the bot role **Manage Threads** and **Send Messages in Threads**
+7. Right-click the forum channel → **Copy Channel ID** (requires Developer Mode: User Settings → Advanced)
+8. Enter Bot Token, Server ID, and Forum Channel ID in the app settings (tray icon → Settings) or `config.json`:
 
 ```json
 {
   "discord_bot_token": "your-bot-token",
   "discord_guild_id": "your-server-id",
-  "discord_category_id": "your-category-id"
+  "discord_forum_id": "your-forum-channel-id"
 }
 ```
 
@@ -112,7 +114,7 @@ Syncs raids where your character is signed up or confirmed to a personal Google 
 
 1. Reads `FGC_DB` from WoW's SavedVariables file
 2. Extracts future events from the guild calendar
-3. **Discord** (if configured): for events with a confirmed roster (group assignments) within 7 days — creates a channel, posts a roster image, pings confirmed members
+3. **Discord** (if configured): for events with a confirmed roster (group assignments) within 7 days — creates a forum thread with a roster image, pings confirmed members
 4. **Google Calendar** (if configured): for events where your character is signed up — creates/updates/deletes calendar entries
 5. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
 

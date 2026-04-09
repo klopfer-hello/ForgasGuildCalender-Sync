@@ -87,7 +87,7 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
 1. **Stale-data guard**: read local SavedVariables file mtime; scan recent messages of all forum threads for the highest `_t<unix_ts>` embedded in any roster image filename. If local mtime < remote max → skip the entire Discord sync (another client has newer data; overwriting would cause flapping images and duplicate pings).
 2. Collect all future guild events (not filtered by personal participation)
 3. For each event:
-   - **Not in mapping** → call `find_existing_thread` (matches by deterministic thread name first, then attachment scan for legacy threads). If found → adopt and seed `pinged` with the current roster. Otherwise → create forum thread with roster image as starter message.
+   - **Not in mapping** → call `find_existing_thread` (matches by deterministic thread name first, then attachment scan for legacy threads). If found → adopt with empty `pinged` list (so `ping_members` can resolve and ping on the next pass). Otherwise → create forum thread with roster image as starter message.
    - **In mapping, content hash changed** → ensure thread is unarchived, then update image in place (PATCH), or post a new image if the original was deleted
    - **In mapping, hash unchanged** → ensure thread is unarchived, fall through to ping retry only
    - **Ping retry**: compute `to_ping = current_confirmed - pinged`. Ping anyone in the diff (label "Confirmed" for new threads, "Newly confirmed" otherwise). `ping_members` returns the subset of names that actually resolved to a Discord member; only those are added to `pinged`. Names that fail to resolve (e.g. user not yet in the Discord server) are retried on the next sync.
@@ -291,6 +291,13 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 - Always search for duplicates before creating (lost mapping scenario)
 - Use `serverTimeMinutes` for time, never `serverHour`/`serverMinute` alone
 - Filter events to only those where the user's character is Signed or Confirmed
+
+### Discord Sync
+
+- The `pinged` list must only contain names that `ping_members` actually resolved — never pre-seed with unverified names
+- Thread adoption (`find_existing_thread`) must start with an empty `pinged` list
+- `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
+- Bot requires **Manage Threads** permission on the forum channel to delete threads with replies
 
 ### UI
 
