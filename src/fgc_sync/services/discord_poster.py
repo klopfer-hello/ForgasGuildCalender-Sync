@@ -1,8 +1,9 @@
-"""Discord REST API client — manages per-event channels with roster images."""
+"""Discord REST API client — manages per-event forum threads with roster images."""
 
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import logging
 import re
 import time
@@ -19,6 +20,30 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://discord.com/api/v10"
 
 _FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
+
+# Short raid names for thread titles
+RAID_SHORT_NAMES: dict[str, str] = {
+    "karazhan": "kara",
+    "gruul": "gruul",
+    "magtheridon": "maggi",
+    "serpentshrine": "ssc",
+    "tempest_keep": "tk",
+    "hyjal": "hyjal",
+    "black_temple": "bt",
+    "sunwell": "swp",
+    "zulaman": "za",
+}
+
+
+def _short_raid_name(raid: str) -> str:
+    """Convert a raid field value to a short name for thread titles."""
+    raid_lower = raid.lower().replace(" ", "_")
+    if raid_lower in RAID_SHORT_NAMES:
+        return RAID_SHORT_NAMES[raid_lower]
+    for key, short in RAID_SHORT_NAMES.items():
+        if key in raid_lower:
+            return short
+    return _slugify(raid, max_len=15) or "event"
 
 
 def compute_event_hash(event: CalendarEvent) -> str:
@@ -54,102 +79,130 @@ _HTTP_TIMEOUT = 30  # seconds for all Discord API calls
 
 
 class DiscordPoster:
-    """Synchronous Discord REST client with per-event channel management."""
+    """Synchronous Discord REST client with per-event forum thread management."""
 
-    def __init__(self, bot_token: str, category_id: str, guild_id: str):
-        self._category_id = category_id
+    def __init__(self, bot_token: str, forum_id: str, guild_id: str):
+        self._forum_id = forum_id
         self._guild_id = guild_id
         self._session = requests.Session()
         self._session.headers["Authorization"] = f"Bot {bot_token}"
         self._members_cache: list[dict] | None = None
-        self._category_channels_cache: list[dict] | None = None
+        self._forum_threads_cache: list[dict] | None = None
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._category_id and self._guild_id)
+        return bool(self._forum_id and self._guild_id)
 
-    # -- Channel management --
+    # -- Thread management --
 
-    def create_event_channel(self, event: CalendarEvent) -> str:
-        """Create a public text channel for an event under the configured category."""
-        name = f"{event.date}-{event.time_str}-{_slugify(event.title)}"
-        location = event.raid.replace("_", " ").title() if event.raid else ""
-        topic = f"{event.summary_line()} | {event.date} {event.time_str}"
-        if location:
-            topic += f" | {location}"
+    @staticmethod
+    def _thread_name(event: CalendarEvent) -> str:
+        """Generate a forum thread name: 2026-04-08-2000-kara-forga."""
+        time_part = f"{event.server_hour:02d}{event.server_minute:02d}"
+        raid_part = _short_raid_name(event.raid) if event.raid else _slugify(event.title, max_len=20)
+        creator_part = _slugify(event.creator, max_len=20) if event.creator else "unknown"
+        return f"{event.date}-{time_part}-{raid_part}-{creator_part}"
 
-        data = self._request(
-            "POST",
-            f"/guilds/{self._guild_id}/channels",
-            json={
-                "name": name,
-                "type": 0,  # GUILD_TEXT
-                "parent_id": self._category_id,
-                "topic": topic,
+    def create_event_thread(
+        self, event: CalendarEvent, timezone: str, sv_mtime: int = 0,
+    ) -> tuple[str, dict]:
+        """Create a forum thread with a roster image as the starter message.
+
+        Returns (thread_id, message_ids) where message_ids contains
+        image_id, hash, and sv_mtime.
+        """
+        name = self._thread_name(event)
+        content_hash = compute_event_hash(event)
+        image_bytes = render_roster(event, timezone)
+        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
+
+        payload = {
+            "name": name,
+            "message": {
+                "content": "",
+                "attachments": [{"id": 0, "filename": filename}],
             },
+        }
+        data = self._upload_multipart(
+            "POST",
+            f"/channels/{self._forum_id}/threads",
+            payload,
+            image_bytes,
+            filename,
         )
-        channel_id = data["id"]
-        log.info("Discord: created channel #%s (%s) for %s", name, channel_id, event.title)
-        return channel_id
+        thread_id = data["id"]
+        message_id = data.get("message", {}).get("id")
+        log.info("Discord: created thread %s (%s) for %s", name, thread_id, event.title)
 
-    def delete_channel(self, channel_id: str):
-        """Delete a channel."""
-        self._request("DELETE", f"/channels/{channel_id}")
-        log.info("Discord: deleted channel %s", channel_id)
+        return thread_id, {"image_id": message_id, "hash": content_hash, "sv_mtime": sv_mtime}
 
-    def channel_exists(self, channel_id: str) -> bool:
-        """Check if a channel still exists."""
+    def delete_thread(self, thread_id: str):
+        """Delete a forum thread."""
+        self._request("DELETE", f"/channels/{thread_id}")
+        log.info("Discord: deleted thread %s", thread_id)
+
+    def thread_exists(self, thread_id: str) -> bool:
+        """Check if a thread still exists."""
         try:
-            self._request("GET", f"/channels/{channel_id}")
+            self._request("GET", f"/channels/{thread_id}")
             return True
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code in (404, 403):
                 return False
             raise
 
-    def find_existing_channel(self, event: CalendarEvent) -> dict | None:
-        """Search category channels for one that belongs to this event.
+    def ensure_unarchived(self, thread_id: str):
+        """Unarchive a forum thread if it has been auto-archived."""
+        try:
+            data = self._request("GET", f"/channels/{thread_id}")
+            if data and data.get("thread_metadata", {}).get("archived"):
+                self._request("PATCH", f"/channels/{thread_id}", json={"archived": False})
+                log.debug("Discord: unarchived thread %s", thread_id)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code in (404, 403):
+                return
+            raise
 
-        Matches first by deterministic channel name (avoids races where another
-        client just created the channel but has not uploaded the image yet),
+    def find_existing_thread(self, event: CalendarEvent) -> dict | None:
+        """Search forum threads for one that belongs to this event.
+
+        Matches first by deterministic thread name (avoids races where another
+        client just created the thread but has not uploaded the image yet),
         then falls back to scanning recent messages for a matching roster image.
         """
         event_id = event.event_id
-        expected_name = f"{event.date}-{event.time_str}-{_slugify(event.title)}"
-        channels = self._get_category_channels()
-        log.debug("Scanning %d category channels for event %s", len(channels), event_id)
+        expected_name = self._thread_name(event)
+        threads = self._get_forum_threads()
+        log.debug("Scanning %d forum threads for event %s", len(threads), event_id)
 
-        # 1. Match by deterministic channel name
-        for channel in channels:
-            if channel.get("name") == expected_name:
-                ch_id = channel["id"]
-                log.info("Discord: matched existing channel by name for %s", event.title)
-                # Try to recover image_id/hash from recent messages; may be empty
-                # if the other client has not uploaded yet — caller will handle.
+        # 1. Match by deterministic thread name
+        for thread in threads:
+            if thread.get("name") == expected_name:
+                th_id = thread["id"]
+                log.info("Discord: matched existing thread by name for %s", event.title)
                 try:
                     messages = self._request(
-                        "GET", f"/channels/{ch_id}/messages", params={"limit": 5},
+                        "GET", f"/channels/{th_id}/messages", params={"limit": 5},
                     )
                     for msg in messages or []:
                         for att in msg.get("attachments", []):
                             m = _FILENAME_PATTERN.match(att.get("filename", ""))
                             if m and m.group(1) == event_id:
                                 return {
-                                    "channel_id": ch_id,
+                                    "channel_id": th_id,
                                     "image_id": msg["id"],
                                     "hash": m.group(2),
                                 }
                 except requests.HTTPError:
                     pass
-                return {"channel_id": ch_id, "image_id": None, "hash": None}
+                return {"channel_id": th_id, "image_id": None, "hash": None}
 
-        # 2. Fall back to attachment scan (legacy channels with non-matching names)
-        for channel in channels:
-            ch_id = channel["id"]
-            # Check pinned or recent messages for a matching roster filename
+        # 2. Fall back to attachment scan (legacy threads with non-matching names)
+        for thread in threads:
+            th_id = thread["id"]
             try:
                 messages = self._request(
-                    "GET", f"/channels/{ch_id}/messages", params={"limit": 5},
+                    "GET", f"/channels/{th_id}/messages", params={"limit": 5},
                 )
                 if not messages:
                     continue
@@ -158,7 +211,7 @@ class DiscordPoster:
                         m = _FILENAME_PATTERN.match(att.get("filename", ""))
                         if m and m.group(1) == event_id:
                             return {
-                                "channel_id": ch_id,
+                                "channel_id": th_id,
                                 "image_id": msg["id"],
                                 "hash": m.group(2),
                             }
@@ -166,36 +219,56 @@ class DiscordPoster:
                 continue
         return None
 
-    def _get_category_channels(self) -> list[dict]:
-        """Get text channels under the configured category (cached per cycle)."""
-        if self._category_channels_cache is not None:
-            return self._category_channels_cache
+    def _get_forum_threads(self) -> list[dict]:
+        """Get threads under the configured forum (cached per cycle)."""
+        if self._forum_threads_cache is not None:
+            return self._forum_threads_cache
 
-        all_channels = self._request("GET", f"/guilds/{self._guild_id}/channels")
-        self._category_channels_cache = [
-            ch for ch in (all_channels or [])
-            if ch.get("parent_id") == self._category_id and ch.get("type") == 0
-        ]
-        return self._category_channels_cache
+        threads: list[dict] = []
 
-    def clear_channel_cache(self):
-        """Clear category channels cache. Call once per sync cycle."""
-        self._category_channels_cache = None
+        # Active threads (guild-wide endpoint, filter to our forum)
+        data = self._request("GET", f"/guilds/{self._guild_id}/threads/active")
+        if data and "threads" in data:
+            threads.extend(
+                t for t in data["threads"]
+                if t.get("parent_id") == self._forum_id
+            )
+
+        active_ids = {t["id"] for t in threads}
+
+        # Archived threads (forum-specific)
+        data = self._request(
+            "GET",
+            f"/channels/{self._forum_id}/threads/archived/public",
+            params={"limit": 100},
+        )
+        if data and "threads" in data:
+            threads.extend(
+                t for t in data["threads"]
+                if t["id"] not in active_ids
+            )
+
+        self._forum_threads_cache = threads
+        return threads
+
+    def clear_thread_cache(self):
+        """Clear forum threads cache. Call once per sync cycle."""
+        self._forum_threads_cache = None
 
     def get_max_remote_sv_mtime(self) -> int:
-        """Scan the last few messages of every category channel and return the
+        """Scan the last few messages of every forum thread and return the
         highest SavedVariables mtime embedded in any roster image filename.
 
         Used to decide whether the local client has stale data and should
         skip writing to Discord (avoiding flapping between two clients).
         """
-        channels = self._get_category_channels()
+        threads = self._get_forum_threads()
         max_ts = 0
-        for ch in channels:
-            ch_id = ch["id"]
+        for th in threads:
+            th_id = th["id"]
             try:
                 messages = self._request(
-                    "GET", f"/channels/{ch_id}/messages", params={"limit": 5},
+                    "GET", f"/channels/{th_id}/messages", params={"limit": 5},
                 )
             except requests.HTTPError:
                 continue
@@ -216,7 +289,10 @@ class DiscordPoster:
     def post_event(
         self, channel_id: str, event: CalendarEvent, timezone: str, sv_mtime: int = 0,
     ) -> dict:
-        """Post roster image in a channel. Returns {image_id, hash, sv_mtime}."""
+        """Post roster image in an existing thread. Returns {image_id, hash, sv_mtime}.
+
+        Used as fallback when the original image was deleted from a thread.
+        """
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
         filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
@@ -351,6 +427,30 @@ class DiscordPoster:
         for attempt in range(3):
             resp = self._session.request(
                 method, url, data=payload, files=files, timeout=_HTTP_TIMEOUT,
+            )
+            if resp.status_code == 429:
+                retry_after = resp.json().get("retry_after", 1.0)
+                log.warning("Discord rate limited, retrying after %.1fs", retry_after)
+                time.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+        return {}
+
+    def _upload_multipart(
+        self, method: str, path: str, payload: dict,
+        image_bytes: bytes, filename: str,
+    ) -> dict:
+        """Send a multipart request with payload_json + file attachment."""
+        url = BASE_URL + path
+        files = {
+            "payload_json": (None, _json.dumps(payload), "application/json"),
+            "files[0]": (filename, image_bytes, "image/png"),
+        }
+        for attempt in range(3):
+            resp = self._session.request(
+                method, url, files=files, timeout=_HTTP_TIMEOUT,
             )
             if resp.status_code == 429:
                 retry_after = resp.json().get("retry_after", 1.0)

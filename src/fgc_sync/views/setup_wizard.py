@@ -152,10 +152,10 @@ class DiscordPage(QWizardPage):
         self._guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
         layout.addWidget(self._guild_edit)
 
-        layout.addWidget(QLabel("Category ID:"))
-        self._category_edit = QLineEdit()
-        self._category_edit.setPlaceholderText("Right-click category → Copy Category ID")
-        layout.addWidget(self._category_edit)
+        layout.addWidget(QLabel("Forum Channel ID:"))
+        self._forum_edit = QLineEdit()
+        self._forum_edit.setPlaceholderText("Right-click forum channel → Copy Channel ID")
+        layout.addWidget(self._forum_edit)
 
         layout.addStretch()
 
@@ -164,8 +164,8 @@ class DiscordPage(QWizardPage):
             self._token_edit.setText(v)
         if v := self._config.get("discord_guild_id", ""):
             self._guild_edit.setText(v)
-        if v := self._config.get("discord_category_id", ""):
-            self._category_edit.setText(v)
+        if v := self._config.get("discord_forum_id", ""):
+            self._forum_edit.setText(v)
 
     def validatePage(self) -> bool:
         if self.wizard().skipped_page:
@@ -173,10 +173,10 @@ class DiscordPage(QWizardPage):
 
         token = self._token_edit.text().strip()
         guild_id = self._guild_edit.text().strip()
-        category_id = self._category_edit.text().strip()
+        forum_id = self._forum_edit.text().strip()
 
         # All or nothing — if any field is filled, all must be
-        filled = [bool(token), bool(guild_id), bool(category_id)]
+        filled = [bool(token), bool(guild_id), bool(forum_id)]
         if any(filled) and not all(filled):
             QMessageBox.warning(
                 self, "Incomplete",
@@ -187,7 +187,7 @@ class DiscordPage(QWizardPage):
         if all(filled):
             self._config.set("discord_bot_token", token)
             self._config.set("discord_guild_id", guild_id)
-            self._config.set("discord_category_id", category_id)
+            self._config.set("discord_forum_id", forum_id)
 
         return True
 

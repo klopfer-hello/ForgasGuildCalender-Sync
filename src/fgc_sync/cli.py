@@ -93,11 +93,11 @@ def _run_cli_setup(config: Config) -> bool:
     ).ask():
         token = questionary.password("Bot token:").ask()
         guild_id = questionary.text("Server (Guild) ID:").ask()
-        category_id = questionary.text("Category ID for raid channels:").ask()
-        if token and guild_id and category_id:
+        forum_id = questionary.text("Forum Channel ID for raid threads:").ask()
+        if token and guild_id and forum_id:
             config.set("discord_bot_token", token)
             config.set("discord_guild_id", guild_id)
-            config.set("discord_category_id", category_id)
+            config.set("discord_forum_id", forum_id)
             print("Discord configured.")
         else:
             print("Skipped — not all fields provided.")
@@ -234,21 +234,21 @@ def main():
 
     # Discord sync
     token = config.get("discord_bot_token", "")
-    category = config.get("discord_category_id", "")
+    forum = config.get("discord_forum_id", "")
     guild = config.get("discord_guild_id", "")
-    if token and category and guild:
-        discord = DiscordPoster(token, category, guild)
+    if token and forum and guild:
+        discord = DiscordPoster(token, forum, guild)
         if args.force:
             mapping = config.get("discord_message_mapping", {})
-            log.info("Force resync: deleting %d tracked channel(s)", len(mapping))
+            log.info("Force resync: deleting %d tracked thread(s)", len(mapping))
             for event_id, info in mapping.items():
                 ch_id = info.get("channel_id")
                 if not ch_id:
                     continue
                 try:
-                    discord.delete_channel(ch_id)
+                    discord.delete_thread(ch_id)
                 except Exception as e:
-                    log.error("Force resync: failed to delete channel %s: %s", ch_id, e)
+                    log.error("Force resync: failed to delete thread %s: %s", ch_id, e)
             config.set("discord_message_mapping", {})
         result = execute_discord_sync(config, discord)
         log.info("Discord: %s", result)
@@ -256,7 +256,7 @@ def main():
             for err in result.errors:
                 log.error("  %s", err)
     elif args.discord_only:
-        log.error("Discord not configured. Set discord_bot_token, discord_category_id, discord_guild_id in config.")
+        log.error("Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config.")
         sys.exit(1)
 
     # Check for updates (non-blocking, just inform)

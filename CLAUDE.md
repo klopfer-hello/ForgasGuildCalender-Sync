@@ -34,7 +34,7 @@ src/fgc_sync/
 ├── services/        # Business logic (no UI, no Qt)
 │   ├── config.py    #   JSON config in %APPDATA%
 │   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
-│   ├── discord_poster.py     #   Discord REST API (images + pings)
+│   ├── discord_poster.py     #   Discord REST API (forum threads + images + pings)
 │   ├── roster_image.py      #   Pillow-based roster card renderer
 │   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
 │   ├── sync_engine.py       #   Diff & sync (create/update/delete)
@@ -84,21 +84,21 @@ src/fgc_sync/
 Runs after Google Calendar sync on every sync cycle. Uses `discord_message_mapping` in config.
 Only posts events within the next 7 days that have a confirmed roster (group assignments).
 
-1. **Stale-data guard**: read local SavedVariables file mtime; scan recent messages of all category channels for the highest `_t<unix_ts>` embedded in any roster image filename. If local mtime < remote max → skip the entire Discord sync (another client has newer data; overwriting would cause flapping images and duplicate pings).
+1. **Stale-data guard**: read local SavedVariables file mtime; scan recent messages of all forum threads for the highest `_t<unix_ts>` embedded in any roster image filename. If local mtime < remote max → skip the entire Discord sync (another client has newer data; overwriting would cause flapping images and duplicate pings).
 2. Collect all future guild events (not filtered by personal participation)
 3. For each event:
-   - **Not in mapping** → call `find_existing_channel` (matches by deterministic channel name first, then attachment scan for legacy channels). If found → adopt and seed `pinged` with the current roster. Otherwise → create channel, post roster image.
-   - **In mapping, content hash changed** → update image in place (PATCH), or post a new image if the original was deleted
-   - **In mapping, hash unchanged** → fall through to ping retry only
-   - **Ping retry**: compute `to_ping = current_confirmed - pinged`. Ping anyone in the diff (label "Confirmed" for new channels, "Newly confirmed" otherwise). `ping_members` returns the subset of names that actually resolved to a Discord member; only those are added to `pinged`. Names that fail to resolve (e.g. user not yet in the Discord server) are retried on the next sync.
-4. Events no longer in WoW (or in `deletedEvents`) → delete channel
-5. Events that happened 24+ hours ago → delete channel
+   - **Not in mapping** → call `find_existing_thread` (matches by deterministic thread name first, then attachment scan for legacy threads). If found → adopt and seed `pinged` with the current roster. Otherwise → create forum thread with roster image as starter message.
+   - **In mapping, content hash changed** → ensure thread is unarchived, then update image in place (PATCH), or post a new image if the original was deleted
+   - **In mapping, hash unchanged** → ensure thread is unarchived, fall through to ping retry only
+   - **Ping retry**: compute `to_ping = current_confirmed - pinged`. Ping anyone in the diff (label "Confirmed" for new threads, "Newly confirmed" otherwise). `ping_members` returns the subset of names that actually resolved to a Discord member; only those are added to `pinged`. Names that fail to resolve (e.g. user not yet in the Discord server) are retried on the next sync.
+4. Events no longer in WoW (or in `deletedEvents`) → delete thread
+5. Events that happened 24+ hours ago → delete thread
 6. Persist `discord_message_mapping` to config
 
-**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Channel-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones.
+**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Thread-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones.
 
 **Mapping schema** (`discord_message_mapping[event_id]`):
-- `channel_id`: Discord channel id
+- `channel_id`: Discord thread id (threads are channels in Discord's API)
 - `message_ids`: `{image_id, hash, sv_mtime}`
 - `pinged`: list of character names that have been successfully pinged so far. Legacy entries may use `confirmed` instead — read code falls back automatically.
 
@@ -110,15 +110,17 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
 - **Sections**: Signed, Bench (no Declined)
 - **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
 
-### Discord Per-Event Channels
+### Discord Per-Event Forum Threads
 
-Each event with a confirmed roster gets its own text channel under a category:
-- **Channel name**: `2026-04-03-20:00-gruul-maggi-mit-forga` (date, time, title)
-- **Topic**: event summary, date, time, location
+Each event with a confirmed roster gets its own thread in a Discord forum channel:
+- **Thread name**: `2026-04-03-2000-gruul-forga` (date, time without colon, short raid name, event creator)
+- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (see `RAID_SHORT_NAMES` in `discord_poster.py`)
+- **Starter message**: roster image posted as part of thread creation (single API call)
 - **Visibility**: public to all server members
+- **Auto-archive handling**: threads are automatically unarchived before posting updates or pings
 - **Pings**: one-off notification messages — "Confirmed:" on creation, "Newly confirmed:" on updates
-- **Cleanup**: channels are deleted 24 hours after the event start time
-- Channels are created in chronological order (sorted by date and time)
+- **Cleanup**: threads are deleted 24 hours after the event start time
+- Threads are created in chronological order (sorted by date and time)
 
 ### Discord Member Matching
 
@@ -128,12 +130,12 @@ Members are matched by checking if the WoW character name is a **case-insensitiv
 
 1. Create a Discord application at discord.com/developers
 2. Bot tab: create bot, copy token, enable **Server Members Intent**
-3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Channels**, **Read Message History**
+3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Threads**, **Read Message History**
 4. Invite bot to your server
-5. Create a **category** in Discord (e.g. "Raids")
-6. In the category's permission settings, give the bot role **Manage Channels** for that category only — this scopes the bot's channel creation/deletion to that category, preventing it from affecting other channels
-7. Right-click the category → Copy Category ID
-8. In the app's Settings, fill in Bot Token, Server ID, and Category ID
+5. Create a **forum channel** in Discord (e.g. "Raids")
+6. In the forum channel's permission settings, give the bot role **Manage Threads** and **Send Messages in Threads** — this scopes the bot's thread creation/deletion to that forum
+7. Right-click the forum channel → Copy Channel ID
+8. In the app's Settings, fill in Bot Token, Server ID, and Forum Channel ID
 
 ### Auto-sync Triggers
 
@@ -189,8 +191,8 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 | `event_mapping` | `{fgc_eventId: {google_id, revision, title}}` |
 | `discord_bot_token` | Discord bot token (optional) |
 | `discord_guild_id` | Discord server ID (optional) |
-| `discord_category_id` | Category ID for raid channels (optional) |
-| `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids: {image_id, mention_id?, hash}, confirmed[]}}` |
+| `discord_forum_id` | Forum channel ID for raid threads (optional) |
+| `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids: {image_id, hash, sv_mtime}, pinged[]}}` |
 
 ### Credential Files
 

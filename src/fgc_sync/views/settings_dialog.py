@@ -98,9 +98,9 @@ class SettingsDialog(QDialog):
         self._discord_guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
         form.addRow("Server ID:", self._discord_guild_edit)
 
-        self._discord_category_edit = QLineEdit(self._config.get("discord_category_id", ""))
-        self._discord_category_edit.setPlaceholderText("Right-click category → Copy Category ID")
-        form.addRow("Category ID:", self._discord_category_edit)
+        self._discord_forum_edit = QLineEdit(self._config.get("discord_forum_id", ""))
+        self._discord_forum_edit.setPlaceholderText("Right-click forum channel → Copy Channel ID")
+        form.addRow("Forum Channel ID:", self._discord_forum_edit)
 
         layout.addLayout(form)
 
@@ -187,13 +187,13 @@ class SettingsDialog(QDialog):
             self._config.set("calendar_id", cal_id)
         self._config.set("discord_bot_token", self._discord_token_edit.text().strip())
         new_guild = self._discord_guild_edit.text().strip()
-        new_category = self._discord_category_edit.text().strip()
+        new_forum = self._discord_forum_edit.text().strip()
         old_guild = self._config.get("discord_guild_id", "")
-        old_category = self._config.get("discord_category_id", "")
+        old_forum = self._config.get("discord_forum_id", "")
         self._config.set("discord_guild_id", new_guild)
-        self._config.set("discord_category_id", new_category)
-        if new_guild != old_guild or new_category != old_category:
-            # Stale channel/message IDs from the previous server/category would
+        self._config.set("discord_forum_id", new_forum)
+        if new_guild != old_guild or new_forum != old_forum:
+            # Stale thread/message IDs from the previous server/forum would
             # otherwise cause sync to skip events with matching content hashes.
             self._config.set("discord_message_mapping", {})
         self.accept()

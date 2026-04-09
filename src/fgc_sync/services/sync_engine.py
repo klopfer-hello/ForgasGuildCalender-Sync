@@ -200,7 +200,7 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
 
 
 def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
-    """Sync guild events to Discord — one private channel per event."""
+    """Sync guild events to Discord — one forum thread per event."""
     import time as _time
     _ds_start = _time.monotonic()
     result = SyncResult()
@@ -217,7 +217,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     log.debug("Discord sync: %d events to process", len(all_events))
     mapping: dict = config.get("discord_message_mapping", {})
     discord.clear_members_cache()
-    discord.clear_channel_cache()
+    discord.clear_thread_cache()
 
     # Stale-data guard: if another client has already written newer
     # SavedVariables data to Discord, skip our entire Discord sync to avoid
@@ -243,7 +243,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
         # Skip expired events — they are only in all_events so the
-        # cleanup phase below can evaluate and delete their channels.
+        # cleanup phase below can evaluate and delete their threads.
         event_dt = _event_to_datetime(evt, timezone)
         if (now - event_dt).total_seconds() / 3600 >= 24:
             continue
@@ -256,9 +256,9 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
         try:
             _evt_start = _time.monotonic()
-            # Check if another client already created a channel for this event
+            # Check if another client already created a thread for this event
             if existing is None:
-                remote = discord.find_existing_channel(evt)
+                remote = discord.find_existing_thread(evt)
                 if remote:
                     existing = {
                         "channel_id": remote["channel_id"],
@@ -268,7 +268,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                         # already pinged.
                         "pinged": list(confirmed_names),
                     }
-                    log.info("Discord: adopted existing channel for %s", evt.title)
+                    log.info("Discord: adopted existing thread for %s", evt.title)
 
             channel_id = (existing or {}).get("channel_id")
             msg_ids = (existing or {}).get("message_ids")
@@ -277,25 +277,29 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 (existing or {}).get("pinged",
                 (existing or {}).get("confirmed", []))
             )
-            is_new_channel = False
+            is_new_thread = False
 
             if channel_id is None:
-                # New event — create channel and post image
-                channel_id = discord.create_event_channel(evt)
-                msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
+                # New event — create forum thread with roster image
+                channel_id, msg_ids = discord.create_event_thread(
+                    evt, timezone, local_sv_mtime,
+                )
                 prev_pinged = set()
-                is_new_channel = True
+                is_new_thread = True
                 result.created += 1
-            elif msg_ids and msg_ids.get("hash") == content_hash:
-                # Image up to date — fall through to ping retry below
-                pass
             else:
-                # Content changed — update image
-                if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
-                    msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone, local_sv_mtime)
+                # Existing thread — ensure it's unarchived before posting
+                discord.ensure_unarchived(channel_id)
+                if msg_ids and msg_ids.get("hash") == content_hash:
+                    # Image up to date — fall through to ping retry below
+                    pass
                 else:
-                    msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
-                result.updated += 1
+                    # Content changed — update image
+                    if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
+                        msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone, local_sv_mtime)
+                    else:
+                        msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
+                    result.updated += 1
 
             # Ping any confirmed members not yet successfully pinged. This
             # also retries members whose Discord account did not exist at
@@ -303,12 +307,12 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             to_ping = set(confirmed_names) - prev_pinged
             newly_pinged: set[str] = set()
             if to_ping:
-                label = "Confirmed" if is_new_channel else "Newly confirmed"
+                label = "Confirmed" if is_new_thread else "Newly confirmed"
                 newly_pinged = discord.ping_members(channel_id, to_ping, label)
             pinged = prev_pinged | newly_pinged
 
             unchanged = (
-                not is_new_channel
+                not is_new_thread
                 and msg_ids
                 and msg_ids.get("hash") == content_hash
                 and not newly_pinged
@@ -329,27 +333,27 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             result.errors.append(f"Discord error for {evt.title}: {e}")
             log.error("Discord error for %s: %s", evt.title, e)
 
-    # Clean up: delete channels for events no longer active
+    # Clean up: delete threads for events no longer active
     ids_to_remove = []
     for event_id, info in mapping.items():
         if event_id not in all_events or event_id in deleted_ids:
             not_in_events = event_id not in all_events
             in_deleted = event_id in deleted_ids
             log.info(
-                "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, channel=%s)",
+                "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, thread=%s)",
                 event_id, not_in_events, in_deleted, info.get("channel_id"),
             )
             ch_id = info.get("channel_id")
             if ch_id:
                 try:
-                    discord.delete_channel(ch_id)
+                    discord.delete_thread(ch_id)
                     result.deleted += 1
                 except Exception as e:
-                    result.errors.append(f"Discord channel delete error {event_id}: {e}")
-                    log.error("Discord channel delete error %s: %s", event_id, e)
+                    result.errors.append(f"Discord thread delete error {event_id}: {e}")
+                    log.error("Discord thread delete error %s: %s", event_id, e)
             ids_to_remove.append(event_id)
 
-    # Clean up: delete channels for events that happened 24+ hours ago
+    # Clean up: delete threads for events that happened 24+ hours ago
     for event_id, info in mapping.items():
         if event_id in ids_to_remove:
             continue
@@ -360,16 +364,16 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         hours_since = (now - event_dt).total_seconds() / 3600
         if hours_since >= 24:
             log.info(
-                "Discord cleanup: removing expired %s (%s, %.1f hours ago, channel=%s)",
+                "Discord cleanup: removing expired %s (%s, %.1f hours ago, thread=%s)",
                 event_id, evt.title, hours_since, info.get("channel_id"),
             )
             ch_id = info.get("channel_id")
             if ch_id:
                 try:
-                    discord.delete_channel(ch_id)
+                    discord.delete_thread(ch_id)
                     result.deleted += 1
                 except Exception as e:
-                    log.error("Discord expired channel delete error: %s", e)
+                    log.error("Discord expired thread delete error: %s", e)
             ids_to_remove.append(event_id)
 
     for eid in ids_to_remove:
