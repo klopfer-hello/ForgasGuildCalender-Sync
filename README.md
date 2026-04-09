@@ -7,6 +7,9 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Latest Release](https://img.shields.io/github/v/release/klopfer-hello/ForgasGuildCalender-Sync)](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/releases/latest)
 
+> ## Disclaimer
+> This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
+
 Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) WoW addon. Reads raid/event data from the addon's SavedVariables and offers two independent sync features — use either or both:
 
 | Feature | What it does |
@@ -17,10 +20,6 @@ Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/Forg
 Both features are optional — configure only what you need.
 
 Runs as a **Windows system tray app** (auto-sync on file changes + 5-minute polling) or as a **headless CLI** for Linux/cron.
-
-## Disclaimer
-
-This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
 
 ## Installation
 
