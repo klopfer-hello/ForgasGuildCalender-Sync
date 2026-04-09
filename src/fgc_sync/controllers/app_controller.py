@@ -91,13 +91,17 @@ class AppController:
         log.info("Poll timer started (every 5 minutes)")
 
     def _run_setup(self):
+        self._config.begin_transaction()
         wizard = SetupWizard(self._config, self._gcal)
         if wizard.exec():
+            self._config.commit_transaction()
             self._start_watcher()
             self._start_poll_timer()
             self._sync.request_sync()
-        elif not self._config.is_setup_complete:
-            self._quit()
+        else:
+            self._config.rollback_transaction()
+            if not self._config.is_setup_complete:
+                self._quit()
 
     def _start_watcher(self):
         sv_path = self._config.saved_variables_path

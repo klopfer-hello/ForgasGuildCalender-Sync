@@ -332,7 +332,7 @@ class SetupWizard(QWizard):
     def __init__(self, config: Config, gcal: GoogleCalendarClient, parent=None):
         super().__init__(parent)
         self.setWindowTitle("FGC Sync - Setup")
-        self.setMinimumSize(500, 380)
+        self.setMinimumSize(500, 440)
         # Use ModernStyle so QSS is honored (Aero/Vista native style on
         # Windows ignores stylesheet colors for QLineEdit/QComboBox).
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)

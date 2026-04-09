@@ -63,6 +63,7 @@ class Config:
     def __init__(self, path: Path | None = None):
         self._path = path or (_app_data_dir() / "config.json")
         self._data: dict = {}
+        self._snapshot: dict | None = None
         self.load()
 
     @property
@@ -81,6 +82,9 @@ class Config:
             self._data = {}
 
     def save(self):
+        if self._snapshot is not None:
+            # Inside a transaction — defer writing to disk
+            return
         with open(self._path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=2, ensure_ascii=False)
 
@@ -90,6 +94,21 @@ class Config:
     def set(self, key: str, value):
         self._data[key] = value
         self.save()
+
+    def begin_transaction(self):
+        """Snapshot current state so changes can be rolled back."""
+        self._snapshot = json.loads(json.dumps(self._data))
+
+    def commit_transaction(self):
+        """Flush buffered changes to disk."""
+        self._snapshot = None
+        self.save()
+
+    def rollback_transaction(self):
+        """Discard all changes made since begin_transaction."""
+        if self._snapshot is not None:
+            self._data = self._snapshot
+            self._snapshot = None
 
     @property
     def is_setup_complete(self) -> bool:

@@ -269,7 +269,11 @@ def main():
 
     if args.setup or not config.is_setup_complete:
         print("Starting interactive setup...\n")
-        if not _run_cli_setup(config):
+        config.begin_transaction()
+        if _run_cli_setup(config):
+            config.commit_transaction()
+        else:
+            config.rollback_transaction()
             print("Setup cancelled.")
             sys.exit(1)
 
