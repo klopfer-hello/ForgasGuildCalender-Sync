@@ -91,15 +91,21 @@ class SettingsDialog(QDialog):
 
         self._discord_token_edit = QLineEdit(self._config.get("discord_bot_token", ""))
         self._discord_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._discord_token_edit.setPlaceholderText("Bot token from Discord Developer Portal")
+        self._discord_token_edit.setPlaceholderText(
+            "Bot token from Discord Developer Portal"
+        )
         form.addRow("Bot Token:", self._discord_token_edit)
 
         self._discord_guild_edit = QLineEdit(self._config.get("discord_guild_id", ""))
-        self._discord_guild_edit.setPlaceholderText("Right-click server → Copy Server ID")
+        self._discord_guild_edit.setPlaceholderText(
+            "Right-click server → Copy Server ID"
+        )
         form.addRow("Server ID:", self._discord_guild_edit)
 
         self._discord_forum_edit = QLineEdit(self._config.get("discord_forum_id", ""))
-        self._discord_forum_edit.setPlaceholderText("Right-click forum channel → Copy Channel ID")
+        self._discord_forum_edit.setPlaceholderText(
+            "Right-click forum channel → Copy Channel ID"
+        )
         form.addRow("Forum Channel ID:", self._discord_forum_edit)
 
         layout.addLayout(form)
@@ -129,8 +135,12 @@ class SettingsDialog(QDialog):
         if not account:
             return
         sv_file = (
-            Path(self._path_edit.text()) / "WTF" / "Account" / account
-            / "SavedVariables" / SAVED_VARIABLES_FILENAME
+            Path(self._path_edit.text())
+            / "WTF"
+            / "Account"
+            / account
+            / "SavedVariables"
+            / SAVED_VARIABLES_FILENAME
         )
         if sv_file.exists():
             try:
@@ -201,4 +211,5 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         from fgc_sync.views.styles import apply_acrylic
+
         apply_acrylic(self)

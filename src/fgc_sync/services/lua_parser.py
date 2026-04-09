@@ -19,7 +19,7 @@ def parse_saved_variables(file_path: Path) -> dict:
     match = _FGC_DB_PATTERN.search(text)
     if not match:
         raise ValueError("Could not find FGC_DB in SavedVariables file")
-    return lua.decode(text[match.end():])
+    return lua.decode(text[match.end() :])
 
 
 def extract_events(
@@ -83,9 +83,7 @@ def get_deleted_event_ids(
 
 def list_guild_keys(db: dict, profile: str = "Default") -> list[str]:
     """Return available guild keys from the parsed DB."""
-    guild_scoped = (
-        db.get("profiles", {}).get(profile, {}).get("guildScoped", {})
-    )
+    guild_scoped = db.get("profiles", {}).get(profile, {}).get("guildScoped", {})
     return list(guild_scoped.keys())
 
 

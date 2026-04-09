@@ -71,7 +71,12 @@ class CalendarEvent:
         )
         lines.append("")
 
-        for status in [Attendance.CONFIRMED, Attendance.SIGNED, Attendance.BENCHED, Attendance.DECLINED]:
+        for status in [
+            Attendance.CONFIRMED,
+            Attendance.SIGNED,
+            Attendance.BENCHED,
+            Attendance.DECLINED,
+        ]:
             group = [p for p in self.participants if p.attendance == status]
             if group:
                 lines.append(f"--- {status.label} ({len(group)}) ---")

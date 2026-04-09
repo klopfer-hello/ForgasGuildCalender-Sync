@@ -30,9 +30,7 @@ class AppController:
 
     def __init__(self, config: Config):
         self._config = config
-        self._gcal = GoogleCalendarClient(
-            config.token_path, config.client_secrets_path
-        )
+        self._gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
         self._discord = self._create_discord_poster()
         self._sync = SyncController(config, self._gcal, self._discord)
         self._tray = TrayIcon()
@@ -139,6 +137,7 @@ class AppController:
         def _run():
             try:
                 from fgc_sync.services.updater import check_for_update
+
                 self._update_result = check_for_update()
             except Exception:
                 log.exception("Update check failed")
@@ -161,13 +160,18 @@ class AppController:
 
     def _on_update_checked(self, info: UpdateInfo | None):
         if info and info.is_newer:
-            log.info("Update available: v%s -> v%s", info.current_version, info.latest_version)
+            log.info(
+                "Update available: v%s -> v%s",
+                info.current_version,
+                info.latest_version,
+            )
             self._pending_update = info
             self._tray.set_update_available(info.latest_version)
             self._prompt_update(info)
 
     def _prompt_update(self, info: UpdateInfo):
         from PySide6.QtWidgets import QMessageBox
+
         msg = QMessageBox()
         msg.setWindowTitle("Update Available")
         msg.setText(
@@ -188,8 +192,10 @@ class AppController:
         if not self._pending_update:
             return
         from PySide6.QtWidgets import QMessageBox
+
         try:
             from fgc_sync.services.updater import perform_update
+
             result = perform_update(self._pending_update)
         except Exception as e:
             log.exception("Update failed")
@@ -198,7 +204,8 @@ class AppController:
 
         if result == "exit":
             QMessageBox.information(
-                None, "Update Complete",
+                None,
+                "Update Complete",
                 "The update has been downloaded and will be applied when "
                 "the application closes.\n\nPlease restart the application "
                 "to use the new version.",
@@ -209,6 +216,7 @@ class AppController:
 
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
+
         text = about_text()
         text += "\n\nChecking for updates..."
         self._about_box = QMessageBox()
@@ -222,6 +230,7 @@ class AppController:
         def _run():
             try:
                 from fgc_sync.services.updater import check_for_update
+
                 self._about_update_result = check_for_update()
             except Exception:
                 log.exception("Update check failed")
@@ -252,8 +261,10 @@ class AppController:
             self._about_box.setText(text)
             if info and info.is_newer:
                 from PySide6.QtWidgets import QMessageBox
+
                 update_btn = self._about_box.addButton(
-                    "Update Now", QMessageBox.ButtonRole.AcceptRole,
+                    "Update Now",
+                    QMessageBox.ButtonRole.AcceptRole,
                 )
                 update_btn.clicked.connect(self._about_update_now)
             self._about_box.adjustSize()
@@ -269,9 +280,7 @@ class AppController:
         self._tray.update_status(status)
 
         if result.errors:
-            self._tray.show_notification(
-                "Sync Error", "\n".join(result.errors[:3])
-            )
+            self._tray.show_notification("Sync Error", "\n".join(result.errors[:3]))
             log.error("Sync errors: %s", result.errors)
         elif result.total_changes > 0:
             self._tray.show_notification("Calendar Synced", status)

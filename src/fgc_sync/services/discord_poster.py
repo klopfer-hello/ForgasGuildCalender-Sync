@@ -63,10 +63,11 @@ def compute_event_hash(event: CalendarEvent) -> str:
         p.name for p in event.participants if p.attendance == Attendance.BENCHED
     )
     groups = sorted(
-        (p.name, p.group, p.slot)
-        for p in event.participants if p.group > 0
+        (p.name, p.group, p.slot) for p in event.participants if p.group > 0
     )
-    payload = f"{event.event_id}|{event.revision}|{confirmed}|{signed}|{benched}|{groups}"
+    payload = (
+        f"{event.event_id}|{event.revision}|{confirmed}|{signed}|{benched}|{groups}"
+    )
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
@@ -119,7 +120,10 @@ class DiscordPoster:
         return f"{weekday} {date_part} {time_part} \u2014 {raid_part} mit {creator}"
 
     def create_event_thread(
-        self, event: CalendarEvent, timezone: str, sv_mtime: int = 0,
+        self,
+        event: CalendarEvent,
+        timezone: str,
+        sv_mtime: int = 0,
     ) -> tuple[str, dict]:
         """Create a forum thread with a roster image as the starter message.
 
@@ -149,7 +153,11 @@ class DiscordPoster:
         message_id = data.get("message", {}).get("id")
         log.info("Discord: created thread %s (%s) for %s", name, thread_id, event.title)
 
-        return thread_id, {"image_id": message_id, "hash": content_hash, "sv_mtime": sv_mtime}
+        return thread_id, {
+            "image_id": message_id,
+            "hash": content_hash,
+            "sv_mtime": sv_mtime,
+        }
 
     def delete_thread(self, thread_id: str):
         """Delete a forum thread."""
@@ -171,7 +179,9 @@ class DiscordPoster:
         try:
             data = self._request("GET", f"/channels/{thread_id}")
             if data and data.get("thread_metadata", {}).get("archived"):
-                self._request("PATCH", f"/channels/{thread_id}", json={"archived": False})
+                self._request(
+                    "PATCH", f"/channels/{thread_id}", json={"archived": False}
+                )
                 log.debug("Discord: unarchived thread %s", thread_id)
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code in (404, 403):
@@ -215,7 +225,8 @@ class DiscordPoster:
         """
         try:
             messages = self._request(
-                "GET", f"/channels/{thread_id}/messages",
+                "GET",
+                f"/channels/{thread_id}/messages",
                 params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
             for msg in messages or []:
@@ -246,8 +257,7 @@ class DiscordPoster:
         data = self._request("GET", f"/guilds/{self._guild_id}/threads/active")
         if data and "threads" in data:
             threads.extend(
-                t for t in data["threads"]
-                if t.get("parent_id") == self._forum_id
+                t for t in data["threads"] if t.get("parent_id") == self._forum_id
             )
 
         active_ids = {t["id"] for t in threads}
@@ -259,10 +269,7 @@ class DiscordPoster:
             params={"limit": _PING_HISTORY_SCAN_LIMIT},
         )
         if data and "threads" in data:
-            threads.extend(
-                t for t in data["threads"]
-                if t["id"] not in active_ids
-            )
+            threads.extend(t for t in data["threads"] if t["id"] not in active_ids)
 
         self._forum_threads_cache = threads
         return threads
@@ -284,7 +291,9 @@ class DiscordPoster:
             th_id = th["id"]
             try:
                 messages = self._request(
-                    "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
+                    "GET",
+                    f"/channels/{th_id}/messages",
+                    params={"limit": _MESSAGE_SCAN_LIMIT},
                 )
             except requests.HTTPError:
                 continue
@@ -303,7 +312,11 @@ class DiscordPoster:
     # -- Message posting --
 
     def post_event(
-        self, channel_id: str, event: CalendarEvent, timezone: str, sv_mtime: int = 0,
+        self,
+        channel_id: str,
+        event: CalendarEvent,
+        timezone: str,
+        sv_mtime: int = 0,
     ) -> dict:
         """Post roster image in an existing thread. Returns {image_id, hash, sv_mtime}.
 
@@ -326,7 +339,11 @@ class DiscordPoster:
         return {"image_id": image_msg_id, "hash": content_hash, "sv_mtime": sv_mtime}
 
     def update_event(
-        self, channel_id: str, message_ids: dict, event: CalendarEvent, timezone: str,
+        self,
+        channel_id: str,
+        message_ids: dict,
+        event: CalendarEvent,
+        timezone: str,
         sv_mtime: int = 0,
     ) -> dict:
         """Edit an existing roster image."""
@@ -348,7 +365,10 @@ class DiscordPoster:
         return message_ids
 
     def ping_members(
-        self, channel_id: str, names: set[str], label: str = "Confirmed",
+        self,
+        channel_id: str,
+        names: set[str],
+        label: str = "Confirmed",
     ) -> set[str]:
         """Post a one-off ping message for the given character names.
 
@@ -375,7 +395,9 @@ class DiscordPoster:
         return resolved
 
     def get_already_pinged_names(
-        self, channel_id: str, candidate_names: set[str],
+        self,
+        channel_id: str,
+        candidate_names: set[str],
     ) -> set[str]:
         """Scan thread history for bot ping messages and return character
         names (from *candidate_names*) that have already been mentioned.
@@ -390,7 +412,9 @@ class DiscordPoster:
 
         try:
             messages = self._request(
-                "GET", f"/channels/{channel_id}/messages", params={"limit": _PING_HISTORY_SCAN_LIMIT},
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
         except requests.HTTPError:
             return set()
@@ -401,7 +425,9 @@ class DiscordPoster:
             if msg.get("author", {}).get("id") != bot_id:
                 continue
             content = msg.get("content", "")
-            if content.startswith("Confirmed:") or content.startswith("Newly confirmed:"):
+            if content.startswith("Confirmed:") or content.startswith(
+                "Newly confirmed:"
+            ):
                 pinged_user_ids.update(re.findall(r"<@(\d+)>", content))
 
         if not pinged_user_ids:
@@ -420,7 +446,9 @@ class DiscordPoster:
 
     def message_exists(self, channel_id: str, message_ids: dict | str) -> bool:
         """Check if the image message still exists."""
-        msg_id = message_ids["image_id"] if isinstance(message_ids, dict) else message_ids
+        msg_id = (
+            message_ids["image_id"] if isinstance(message_ids, dict) else message_ids
+        )
         try:
             self._request("GET", f"/channels/{channel_id}/messages/{msg_id}")
             return True
@@ -447,7 +475,9 @@ class DiscordPoster:
             if len(batch) < _MEMBERS_PER_PAGE:
                 break
             after = batch[-1]["user"]["id"]
-        log.debug("Fetched %d guild members in %.1fs", len(members), time.monotonic() - _start)
+        log.debug(
+            "Fetched %d guild members in %.1fs", len(members), time.monotonic() - _start
+        )
         return members
 
     def _get_members(self) -> list[dict]:
@@ -472,7 +502,11 @@ class DiscordPoster:
             user = member.get("user", {})
             global_name = (user.get("global_name") or "").lower()
             username = (user.get("username") or "").lower()
-            if char_lower in nick or char_lower in global_name or char_lower in username:
+            if (
+                char_lower in nick
+                or char_lower in global_name
+                or char_lower in username
+            ):
                 return user.get("id")
         return None
 
@@ -483,7 +517,10 @@ class DiscordPoster:
         resp = None
         for _attempt in range(_MAX_RETRIES):
             resp = self._session.request(
-                method, url, timeout=_HTTP_TIMEOUT, **kwargs,
+                method,
+                url,
+                timeout=_HTTP_TIMEOUT,
+                **kwargs,
             )
             if resp.status_code == 429:
                 retry_after = resp.json().get("retry_after", 1.0)
@@ -496,18 +533,30 @@ class DiscordPoster:
         return resp  # type: ignore[return-value]
 
     def _upload_image(
-        self, method: str, path: str, image_bytes: bytes, filename: str, content: str,
+        self,
+        method: str,
+        path: str,
+        image_bytes: bytes,
+        filename: str,
+        content: str,
     ) -> dict:
         files = {"files[0]": (filename, image_bytes, "image/png")}
         data = {"content": content} if content else {}
         resp = self._retry_request(
-            method, BASE_URL + path, data=data, files=files,
+            method,
+            BASE_URL + path,
+            data=data,
+            files=files,
         )
         return resp.json()
 
     def _upload_multipart(
-        self, method: str, path: str, payload: dict,
-        image_bytes: bytes, filename: str,
+        self,
+        method: str,
+        path: str,
+        payload: dict,
+        image_bytes: bytes,
+        filename: str,
     ) -> dict:
         """Send a multipart request with payload_json + file attachment."""
         files = {
@@ -521,7 +570,10 @@ class DiscordPoster:
         headers = kwargs.pop("headers", {})
         headers["Content-Type"] = "application/json"
         resp = self._retry_request(
-            method, BASE_URL + path, headers=headers, **kwargs,
+            method,
+            BASE_URL + path,
+            headers=headers,
+            **kwargs,
         )
         if resp.status_code == 204:
             return None

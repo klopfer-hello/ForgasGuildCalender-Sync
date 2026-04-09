@@ -61,6 +61,7 @@ _role_icon_cache: dict[str, Image.Image] = {}
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     import os
+
     candidates = []
     if os.name == "nt":
         candidates = [
@@ -121,7 +122,14 @@ def _get_role_icon(role_code: str) -> Image.Image:
 
     if role_code == "TANK":
         # Shield shape
-        pts = [(cx, 2), (size - 2, 4), (size - 3, cy + 2), (cx, size - 2), (3, cy + 2), (2, 4)]
+        pts = [
+            (cx, 2),
+            (size - 2, 4),
+            (size - 3, cy + 2),
+            (cx, size - 2),
+            (3, cy + 2),
+            (2, 4),
+        ]
         draw.polygon(pts, fill=(80, 130, 220, 230), outline=(140, 180, 255, 255))
     elif role_code == "HEALER":
         # Plus/cross
@@ -136,13 +144,16 @@ def _get_role_icon(role_code: str) -> Image.Image:
         grip_color = (160, 60, 60, 200)
         # Blade (vertical line, top to center)
         bw = max(s // 8, 1)  # blade half-width
-        draw.polygon([
-            (cx - bw, s * 2 // 10),   # left top of blade
-            (cx, s * 1 // 10),         # tip
-            (cx + bw, s * 2 // 10),    # right top of blade
-            (cx + bw, s * 6 // 10),    # right bottom of blade
-            (cx - bw, s * 6 // 10),    # left bottom of blade
-        ], fill=blade_color)
+        draw.polygon(
+            [
+                (cx - bw, s * 2 // 10),  # left top of blade
+                (cx, s * 1 // 10),  # tip
+                (cx + bw, s * 2 // 10),  # right top of blade
+                (cx + bw, s * 6 // 10),  # right bottom of blade
+                (cx - bw, s * 6 // 10),  # left bottom of blade
+            ],
+            fill=blade_color,
+        )
         # Guard (horizontal bar)
         gw = s * 3 // 10  # guard half-width
         gh = max(s // 10, 1)
@@ -152,15 +163,20 @@ def _get_role_icon(role_code: str) -> Image.Image:
         draw.rectangle([(cx - bw, gy + gh), (cx + bw, s * 85 // 100)], fill=grip_color)
         # Pommel
         pr = max(s // 8, 1)
-        draw.ellipse([(cx - pr, s * 83 // 100), (cx + pr, s * 95 // 100)], fill=grip_color)
+        draw.ellipse(
+            [(cx - pr, s * 83 // 100), (cx + pr, s * 95 // 100)], fill=grip_color
+        )
 
     _role_icon_cache[role_code] = icon
     return icon
 
 
 def _draw_participant(
-    img: Image.Image, draw: ImageDraw.ImageDraw,
-    p: Participant, x: int, y: int,
+    img: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    p: Participant,
+    x: int,
+    y: int,
     font: ImageFont.FreeTypeFont,
 ):
     """Draw a single participant: role icon + class icon + name."""
@@ -232,8 +248,17 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
 
     try:
         from datetime import date as date_cls
+
         dt = date_cls.fromisoformat(event.date)
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_names = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
         day_name = day_names[dt.weekday()]
         date_str = f"{day_name}, {event.date}    {event.time_str}"
     except ValueError:
@@ -272,13 +297,21 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
                     [(x, y), (x + GROUP_COL_WIDTH - 4, y + GROUP_HEADER_HEIGHT - 2)],
                     fill=GROUP_HEADER_BG,
                 )
-                draw.text((x + 6 * SCALE, y + 5 * SCALE), f"Group {g}", fill=TEXT_COLOR, font=font_header)
+                draw.text(
+                    (x + 6 * SCALE, y + 5 * SCALE),
+                    f"Group {g}",
+                    fill=TEXT_COLOR,
+                    font=font_header,
+                )
 
                 for si, p in enumerate(groups.get(g, [])):
                     sy = y + GROUP_HEADER_HEIGHT + si * ROW_HEIGHT
                     if si % 2 == 0:
                         draw.rectangle(
-                            [(x, sy), (x + GROUP_COL_WIDTH - 4 * SCALE, sy + ROW_HEIGHT - 1)],
+                            [
+                                (x, sy),
+                                (x + GROUP_COL_WIDTH - 4 * SCALE, sy + ROW_HEIGHT - 1),
+                            ],
                             fill=GROUP_BG,
                         )
                     _draw_participant(img, draw, p, x, sy, font)
@@ -287,15 +320,27 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
 
     # -- Ungrouped confirmed --
     if ungrouped_confirmed:
-        y = _draw_section(img, draw, ungrouped_confirmed, "Confirmed (unassigned)", y, font, font_header)
+        y = _draw_section(
+            img,
+            draw,
+            ungrouped_confirmed,
+            "Confirmed (unassigned)",
+            y,
+            font,
+            font_header,
+        )
 
     # -- Signed --
     if signed:
-        y = _draw_section(img, draw, signed, f"Signed ({len(signed)})", y, font, font_header)
+        y = _draw_section(
+            img, draw, signed, f"Signed ({len(signed)})", y, font, font_header
+        )
 
     # -- Benched --
     if benched:
-        y = _draw_section(img, draw, benched, f"Bench ({len(benched)})", y, font, font_header)
+        y = _draw_section(
+            img, draw, benched, f"Bench ({len(benched)})", y, font, font_header
+        )
 
     # -- Footer: role & class counts --
     draw.line([(PADDING, y), (CARD_WIDTH - PADDING, y)], fill=BORDER_COLOR)
@@ -310,7 +355,9 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
     role_text_parts = []
     for role in ("TANK", "HEALER", "DAMAGER"):
         if role_counts.get(role, 0) > 0:
-            role_text_parts.append(f"{ROLE_LABELS.get(role, role)}s ({role_counts[role]})")
+            role_text_parts.append(
+                f"{ROLE_LABELS.get(role, role)}s ({role_counts[role]})"
+            )
     role_text = "    ".join(role_text_parts)
     draw.text((PADDING, y), role_text, fill=SUBTEXT_COLOR, font=font_small)
     y += 18 * SCALE
@@ -347,7 +394,9 @@ def _draw_section(
         [(PADDING, y), (CARD_WIDTH - PADDING, y + GROUP_HEADER_HEIGHT - 2)],
         fill=GROUP_HEADER_BG,
     )
-    draw.text((PADDING + 6 * SCALE, y + 5 * SCALE), title, fill=TEXT_COLOR, font=font_header)
+    draw.text(
+        (PADDING + 6 * SCALE, y + 5 * SCALE), title, fill=TEXT_COLOR, font=font_header
+    )
     y += GROUP_HEADER_HEIGHT
 
     cols = GROUP_COLS

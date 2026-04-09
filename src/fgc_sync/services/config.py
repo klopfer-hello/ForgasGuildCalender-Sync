@@ -31,7 +31,9 @@ def encode_setup_code(config_data: dict) -> str:
     payload = {k: config_data.get(k, "") for k in _SETUP_CODE_KEYS}
     raw = json.dumps(payload, separators=(",", ":")).encode()
     compressed = zlib.compress(raw, level=9)
-    return _SETUP_CODE_PREFIX + base64.urlsafe_b64encode(compressed).decode().rstrip("=")
+    return _SETUP_CODE_PREFIX + base64.urlsafe_b64encode(compressed).decode().rstrip(
+        "="
+    )
 
 
 def decode_setup_code(code: str) -> dict | None:
@@ -42,7 +44,7 @@ def decode_setup_code(code: str) -> dict | None:
     code = code.strip()
     if not code.startswith(_SETUP_CODE_PREFIX):
         return None
-    b64 = code[len(_SETUP_CODE_PREFIX):]
+    b64 = code[len(_SETUP_CODE_PREFIX) :]
     # Restore base64 padding
     b64 += "=" * (-len(b64) % 4)
     try:
@@ -129,8 +131,12 @@ class Config:
         if not wow or not account:
             return None
         return (
-            Path(wow) / "WTF" / "Account" / account
-            / "SavedVariables" / SAVED_VARIABLES_FILENAME
+            Path(wow)
+            / "WTF"
+            / "Account"
+            / account
+            / "SavedVariables"
+            / SAVED_VARIABLES_FILENAME
         )
 
     @property

@@ -46,7 +46,8 @@ def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
         log.warning(
             "Discord: local SavedVariables (%d) is older than "
             "the most recent remote update (%d). Another client has newer data.",
-            local_sv_mtime, remote_sv_mtime,
+            local_sv_mtime,
+            remote_sv_mtime,
         )
         return True
     return False
@@ -71,25 +72,58 @@ def compute_sync_plan(
         info = f"{evt.confirmed_count} confirmed, {evt.signed_count} signed"
 
         if existing is None:
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.CREATE, event_id, title, evt.date, evt.time_str, evt.type_label, info
-            ))
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.CREATE,
+                    event_id,
+                    title,
+                    evt.date,
+                    evt.time_str,
+                    evt.type_label,
+                    info,
+                )
+            )
         elif existing.get("revision") != evt.revision:
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.UPDATE, event_id, title, evt.date, evt.time_str, evt.type_label, info
-            ))
-        elif gcal and calendar_id and not gcal.event_exists(calendar_id, existing["google_id"]):
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.CREATE, event_id, title, evt.date, evt.time_str, evt.type_label,
-                info + " (deleted externally)"
-            ))
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.UPDATE,
+                    event_id,
+                    title,
+                    evt.date,
+                    evt.time_str,
+                    evt.type_label,
+                    info,
+                )
+            )
+        elif (
+            gcal
+            and calendar_id
+            and not gcal.event_exists(calendar_id, existing["google_id"])
+        ):
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.CREATE,
+                    event_id,
+                    title,
+                    evt.date,
+                    evt.time_str,
+                    evt.type_label,
+                    info + " (deleted externally)",
+                )
+            )
 
     for event_id in mapping:
         if event_id not in syncable or event_id in deleted_ids:
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.DELETE, event_id,
-                mapping[event_id].get("title", event_id), "", "", ""
-            ))
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.DELETE,
+                    event_id,
+                    mapping[event_id].get("title", event_id),
+                    "",
+                    "",
+                    "",
+                )
+            )
 
     return plan
 
@@ -97,6 +131,7 @@ def compute_sync_plan(
 def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
     """Parse SavedVariables and sync events to Google Calendar."""
     import time as _time
+
     _gs_start = _time.monotonic()
     result = SyncResult()
 
@@ -126,7 +161,8 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
             if existing is None:
                 log.debug(
                     "Event %s (%s) not in mapping, will create or adopt",
-                    event_id, evt.title,
+                    event_id,
+                    evt.title,
                 )
                 # Check for duplicate before creating
                 found_id = gcal.find_event_by_summary(calendar_id, summary, evt.date)
@@ -153,14 +189,22 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
             elif existing.get("revision") != evt.revision:
                 log.debug(
                     "Revision mismatch for %s (%s): stored=%r (%s) parsed=%r (%s)",
-                    event_id, evt.title,
-                    existing.get("revision"), type(existing.get("revision")).__name__,
-                    evt.revision, type(evt.revision).__name__,
+                    event_id,
+                    evt.title,
+                    existing.get("revision"),
+                    type(existing.get("revision")).__name__,
+                    evt.revision,
+                    type(evt.revision).__name__,
                 )
                 if gcal.event_exists(calendar_id, existing["google_id"]):
                     gcal.update_event(
-                        calendar_id, existing["google_id"],
-                        summary, start_dt, duration, description, location,
+                        calendar_id,
+                        existing["google_id"],
+                        summary,
+                        start_dt,
+                        duration,
+                        description,
+                        location,
                     )
                     mapping[event_id]["revision"] = evt.revision
                     mapping[event_id]["title"] = evt.title
@@ -177,7 +221,9 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
                         "title": evt.title,
                     }
                     result.created += 1
-                    log.info("Re-created (deleted externally): %s (%s)", summary, evt.date)
+                    log.info(
+                        "Re-created (deleted externally): %s (%s)", summary, evt.date
+                    )
 
             elif not gcal.event_exists(calendar_id, existing["google_id"]):
                 # Revision unchanged but event deleted externally, re-create
@@ -218,13 +264,18 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
     _gs_elapsed = _time.monotonic() - _gs_start
     log.debug(
         "Google sync finished in %.1fs: %d created, %d updated, %d deleted, %d skipped",
-        _gs_elapsed, result.created, result.updated, result.deleted, result.skipped,
+        _gs_elapsed,
+        result.created,
+        result.updated,
+        result.deleted,
+        result.skipped,
     )
     return result
 
 
 def compute_discord_sync_plan(
-    config: Config, discord: DiscordPoster,
+    config: Config,
+    discord: DiscordPoster,
 ) -> SyncPlan:
     """Compute what Discord sync would do without making any changes.
 
@@ -255,7 +306,10 @@ def compute_discord_sync_plan(
 
     now = datetime.now(ZoneInfo(timezone))
 
-    for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
+    for event_id, evt in sorted(
+        all_events.items(),
+        key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute),
+    ):
         event_dt = _event_to_datetime(evt, timezone)
         if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
             continue
@@ -284,20 +338,26 @@ def compute_discord_sync_plan(
         channel_id = (existing or {}).get("channel_id")
         msg_ids = (existing or {}).get("message_ids")
         prev_pinged = set(
-            (existing or {}).get("pinged",
-            (existing or {}).get("confirmed", []))
+            (existing or {}).get("pinged", (existing or {}).get("confirmed", []))
         )
 
         if channel_id is None:
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.CREATE, event_id, title,
-                evt.date, evt.time_str, evt.type_label,
-                info + f", ping {len(confirmed_names)}",
-            ))
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.CREATE,
+                    event_id,
+                    title,
+                    evt.date,
+                    evt.time_str,
+                    evt.type_label,
+                    info + f", ping {len(confirmed_names)}",
+                )
+            )
         else:
             # Check ping history from the thread
             history_pinged = discord.get_already_pinged_names(
-                channel_id, set(confirmed_names),
+                channel_id,
+                set(confirmed_names),
             )
             prev_pinged = prev_pinged | history_pinged
             to_ping = set(confirmed_names) - prev_pinged
@@ -307,33 +367,60 @@ def compute_discord_sync_plan(
                 detail = info
                 if to_ping:
                     detail += f", ping {len(to_ping)} new"
-                plan.entries.append(SyncPlanEntry(
-                    SyncAction.UPDATE, event_id, title,
-                    evt.date, evt.time_str, evt.type_label, detail,
-                ))
+                plan.entries.append(
+                    SyncPlanEntry(
+                        SyncAction.UPDATE,
+                        event_id,
+                        title,
+                        evt.date,
+                        evt.time_str,
+                        evt.type_label,
+                        detail,
+                    )
+                )
             elif to_ping:
-                plan.entries.append(SyncPlanEntry(
-                    SyncAction.UPDATE, event_id, title,
-                    evt.date, evt.time_str, evt.type_label,
-                    f"ping {len(to_ping)} new: {', '.join(sorted(to_ping))}",
-                ))
+                plan.entries.append(
+                    SyncPlanEntry(
+                        SyncAction.UPDATE,
+                        event_id,
+                        title,
+                        evt.date,
+                        evt.time_str,
+                        evt.type_label,
+                        f"ping {len(to_ping)} new: {', '.join(sorted(to_ping))}",
+                    )
+                )
 
     # Events in mapping but no longer in WoW or deleted
     for event_id, _info_map in mapping.items():
         if event_id not in all_events or event_id in deleted_ids:
-            plan.entries.append(SyncPlanEntry(
-                SyncAction.DELETE, event_id, event_id, "", "", "",
-            ))
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.DELETE,
+                    event_id,
+                    event_id,
+                    "",
+                    "",
+                    "",
+                )
+            )
             continue
         # Expired (24+ hours ago)
         evt = all_events.get(event_id)
         if evt:
             event_dt = _event_to_datetime(evt, timezone)
             if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
-                plan.entries.append(SyncPlanEntry(
-                    SyncAction.DELETE, event_id, evt.title, evt.date, evt.time_str,
-                    evt.type_label, "expired",
-                ))
+                plan.entries.append(
+                    SyncPlanEntry(
+                        SyncAction.DELETE,
+                        event_id,
+                        evt.title,
+                        evt.date,
+                        evt.time_str,
+                        evt.type_label,
+                        "expired",
+                    )
+                )
 
     return plan
 
@@ -341,6 +428,7 @@ def compute_discord_sync_plan(
 def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     """Sync guild events to Discord — one forum thread per event."""
     import time as _time
+
     _ds_start = _time.monotonic()
     result = SyncResult()
     timezone = config.get("timezone", "Europe/Berlin")
@@ -371,7 +459,10 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     now = datetime.now(ZoneInfo(timezone))
 
-    for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
+    for event_id, evt in sorted(
+        all_events.items(),
+        key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute),
+    ):
         # Skip expired events — they are only in all_events so the
         # cleanup phase below can evaluate and delete their threads.
         event_dt = _event_to_datetime(evt, timezone)
@@ -404,15 +495,16 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             msg_ids = (existing or {}).get("message_ids")
             # Backward compat: legacy entries used "confirmed" for the full roster
             prev_pinged = set(
-                (existing or {}).get("pinged",
-                (existing or {}).get("confirmed", []))
+                (existing or {}).get("pinged", (existing or {}).get("confirmed", []))
             )
             is_new_thread = False
 
             if channel_id is None:
                 # New event — create forum thread with roster image
                 channel_id, msg_ids = discord.create_event_thread(
-                    evt, timezone, local_sv_mtime,
+                    evt,
+                    timezone,
+                    local_sv_mtime,
                 )
                 prev_pinged = set()
                 is_new_thread = True
@@ -426,7 +518,11 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 else:
                     # Content changed — update image in place, or find it
                     # if the local mapping lost track of the message ID
-                    can_patch = msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids)
+                    can_patch = (
+                        msg_ids
+                        and msg_ids.get("image_id")
+                        and discord.message_exists(channel_id, msg_ids)
+                    )
                     if not can_patch:
                         # Try to locate the original image before posting a duplicate
                         found_id = discord.find_image_message(channel_id, evt.event_id)
@@ -435,16 +531,21 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                             msg_ids["image_id"] = found_id
                             can_patch = True
                     if can_patch:
-                        msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone, local_sv_mtime)
+                        msg_ids = discord.update_event(
+                            channel_id, msg_ids, evt, timezone, local_sv_mtime
+                        )
                     else:
-                        msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)
+                        msg_ids = discord.post_event(
+                            channel_id, evt, timezone, local_sv_mtime
+                        )
                     result.updated += 1
 
             # Scan thread history to catch pings from other clients that
             # are not reflected in our local mapping.
             if channel_id and not is_new_thread:
                 history_pinged = discord.get_already_pinged_names(
-                    channel_id, set(confirmed_names),
+                    channel_id,
+                    set(confirmed_names),
                 )
                 prev_pinged = prev_pinged | history_pinged
 
@@ -474,7 +575,9 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             }
             _evt_elapsed = _time.monotonic() - _evt_start
             if _evt_elapsed > _SLOW_OPERATION_SECONDS:
-                log.warning("Discord: slow operation for %s: %.1fs", evt.title, _evt_elapsed)
+                log.warning(
+                    "Discord: slow operation for %s: %.1fs", evt.title, _evt_elapsed
+                )
 
         except Exception as e:
             result.errors.append(f"Discord error for {evt.title}: {e}")
@@ -488,7 +591,10 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             in_deleted = event_id in deleted_ids
             log.info(
                 "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, thread=%s)",
-                event_id, not_in_events, in_deleted, info.get("channel_id"),
+                event_id,
+                not_in_events,
+                in_deleted,
+                info.get("channel_id"),
             )
             ch_id = info.get("channel_id")
             if ch_id:
@@ -512,7 +618,10 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         if hours_since >= 24:
             log.info(
                 "Discord cleanup: removing expired %s (%s, %.1f hours ago, thread=%s)",
-                event_id, evt.title, hours_since, info.get("channel_id"),
+                event_id,
+                evt.title,
+                hours_since,
+                info.get("channel_id"),
             )
             ch_id = info.get("channel_id")
             if ch_id:
@@ -530,12 +639,17 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     _ds_elapsed = _time.monotonic() - _ds_start
     log.debug(
         "Discord sync finished in %.1fs: %d created, %d updated, %d deleted, %d skipped",
-        _ds_elapsed, result.created, result.updated, result.deleted, result.skipped,
+        _ds_elapsed,
+        result.created,
+        result.updated,
+        result.deleted,
+        result.skipped,
     )
     return result
 
 
 # --- Private helpers ---
+
 
 def _collect_syncable_events(
     config: Config,
@@ -612,12 +726,20 @@ def _collect_all_future_events(
         try:
             evt_date = date.fromisoformat(evt.date)
         except ValueError:
-            log.debug("Discord collect: skipping %s (%s) — invalid date", evt.event_id, evt.title)
+            log.debug(
+                "Discord collect: skipping %s (%s) — invalid date",
+                evt.event_id,
+                evt.title,
+            )
             continue
         if evt_date < earliest or evt_date > cutoff:
             log.debug(
                 "Discord collect: skipping %s (%s) — date %s outside window [%s, %s]",
-                evt.event_id, evt.title, evt.date, earliest, cutoff,
+                evt.event_id,
+                evt.title,
+                evt.date,
+                earliest,
+                cutoff,
             )
             continue
         # Only include events where a roster has been created (confirmed members with groups)
@@ -628,7 +750,8 @@ def _collect_all_future_events(
         if not has_roster:
             log.debug(
                 "Discord collect: skipping %s (%s) — no confirmed roster",
-                evt.event_id, evt.title,
+                evt.event_id,
+                evt.title,
             )
             continue
         result[evt.event_id] = evt
@@ -648,7 +771,10 @@ def _find_participating_character(
 def _event_to_datetime(event: CalendarEvent, timezone: str) -> datetime:
     parts = event.date.split("-")
     return datetime(
-        int(parts[0]), int(parts[1]), int(parts[2]),
-        event.server_hour, event.server_minute,
+        int(parts[0]),
+        int(parts[1]),
+        int(parts[2]),
+        event.server_hour,
+        event.server_minute,
         tzinfo=ZoneInfo(timezone),
     )

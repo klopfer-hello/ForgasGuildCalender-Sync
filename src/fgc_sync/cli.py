@@ -33,6 +33,7 @@ from fgc_sync.services.sync_engine import (
 def _normalize_path(p: str) -> str:
     """Convert git-bash /d/... paths to D:/... on Windows."""
     import re
+
     if os.name == "nt" and re.match(r"^/[a-zA-Z]/", p):
         return p[1].upper() + ":" + p[2:]
     return p
@@ -60,7 +61,8 @@ def _run_cli_setup(config: Config) -> bool:
 
     # 2. Account folder (arrow-key select)
     accounts = [
-        d.name for d in sorted(wtf.iterdir())
+        d.name
+        for d in sorted(wtf.iterdir())
         if d.is_dir() and d.name != "SavedVariables"
     ]
     if not accounts:
@@ -133,9 +135,11 @@ def _run_cli_setup(config: Config) -> bool:
 
     # 5. Google Calendar (optional)
     if questionary.confirm(
-        "Set up Google Calendar sync?", default=False,
+        "Set up Google Calendar sync?",
+        default=False,
     ).ask():
         from fgc_sync.services.google_calendar import GoogleCalendarClient
+
         gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
         if not config.client_secrets_path.exists():
             print(f"Place client_secrets.json at: {config.client_secrets_path}")
@@ -152,7 +156,8 @@ def _run_cli_setup(config: Config) -> bool:
                             label += " (primary)"
                         choices.append(questionary.Choice(label, value=cal["id"]))
                     cal_id = questionary.select(
-                        "Select calendar:", choices=choices,
+                        "Select calendar:",
+                        choices=choices,
                     ).ask()
                     if cal_id:
                         config.set("calendar_id", cal_id)
@@ -169,45 +174,57 @@ def _run_cli_setup(config: Config) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="FGC Sync — headless CLI")
     parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
-        "--about", action="store_true",
+        "--about",
+        action="store_true",
         help="Show version and license information",
     )
     parser.add_argument(
-        "--check-update", action="store_true",
+        "--check-update",
+        action="store_true",
         help="Check if a newer version is available",
     )
     parser.add_argument(
-        "--update", action="store_true",
+        "--update",
+        action="store_true",
         help="Download and install the latest version",
     )
     parser.add_argument(
-        "--setup", action="store_true",
+        "--setup",
+        action="store_true",
         help="Re-run the interactive setup (reconfigure WoW, Discord, Google)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what sync would do without making any changes",
     )
     parser.add_argument(
-        "--discord-only", action="store_true",
+        "--discord-only",
+        action="store_true",
         help="Only sync to Discord, skip Google Calendar",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Force Discord resync: delete all tracked channels and clear "
-             "the mapping before syncing, so every channel is recreated and "
-             "every confirmed member is re-pinged",
+        "the mapping before syncing, so every channel is recreated and "
+        "every confirmed member is re-pinged",
     )
     parser.add_argument(
-        "--export-code", action="store_true",
+        "--export-code",
+        action="store_true",
         help="Print a setup code that encodes the Discord bot config "
-             "(token, server ID, forum ID) for sharing with other users",
+        "(token, server ID, forum ID) for sharing with other users",
     )
     parser.add_argument(
-        "--config-dir", type=str, default=None,
+        "--config-dir",
+        type=str,
+        default=None,
         help="Use a custom config directory (for testing or multi-user setups)",
     )
     args = parser.parse_args()
@@ -218,6 +235,7 @@ def main():
 
     if args.check_update or args.update:
         from fgc_sync.services.updater import check_for_update, perform_update
+
         info = check_for_update()
         if info is None:
             print("Could not check for updates.")
@@ -245,9 +263,11 @@ def main():
         guild_id = config.get("discord_guild_id", "")
         forum_id = config.get("discord_forum_id", "")
         if not (token and guild_id and forum_id):
-            print("Error: Discord is not fully configured. "
-                  "Set up discord_bot_token, discord_guild_id, and "
-                  "discord_forum_id first.")
+            print(
+                "Error: Discord is not fully configured. "
+                "Set up discord_bot_token, discord_guild_id, and "
+                "discord_forum_id first."
+            )
             sys.exit(1)
         code = encode_setup_code(config._data)
         print("Share this setup code with other users:\n")
@@ -308,9 +328,11 @@ def main():
             if not plan.entries:
                 print(f"{label}: no changes.")
             else:
-                print(f"{label}: {len(plan.creates)} to create, "
-                      f"{len(plan.updates)} to update, "
-                      f"{len(plan.deletes)} to delete\n")
+                print(
+                    f"{label}: {len(plan.creates)} to create, "
+                    f"{len(plan.updates)} to update, "
+                    f"{len(plan.deletes)} to delete\n"
+                )
                 act_w = max(len(e.action.value) for e in plan.entries)
                 title_w = max(len(e.title) for e in plan.entries)
                 date_w = max((len(e.date) for e in plan.entries), default=0)
@@ -339,7 +361,9 @@ def main():
                 for err in result.errors:
                     log.error("  %s", err)
         else:
-            log.warning("Google credentials not found or expired, skipping Google Calendar sync")
+            log.warning(
+                "Google credentials not found or expired, skipping Google Calendar sync"
+            )
 
     # Discord sync
     token = config.get("discord_bot_token", "")
@@ -365,17 +389,21 @@ def main():
             for err in result.errors:
                 log.error("  %s", err)
     elif args.discord_only:
-        log.error("Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config.")
+        log.error(
+            "Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config."
+        )
         sys.exit(1)
 
     # Check for updates (non-blocking, just inform)
     try:
         from fgc_sync.services.updater import check_for_update
+
         info = check_for_update()
         if info and info.is_newer:
             log.info(
                 "Update available: v%s -> v%s. Run with --update to install.",
-                info.current_version, info.latest_version,
+                info.current_version,
+                info.latest_version,
             )
     except Exception:
         pass  # never fail the sync because of an update check

@@ -17,7 +17,14 @@ from ..services.config import _app_data_dir
 
 
 def _startup_shortcut_path() -> Path:
-    startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup = (
+        Path(os.environ["APPDATA"])
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+    )
     return startup / "FGCCalendarSync.lnk"
 
 
@@ -53,6 +60,7 @@ def set_autostart(enabled: bool):
     if enabled:
         try:
             import subprocess
+
             exe = _exe_path()
             log.info("Creating startup shortcut targeting: %s", exe)
             ps_script = (
@@ -64,7 +72,8 @@ def set_autostart(enabled: bool):
             )
             subprocess.run(
                 ["powershell", "-Command", ps_script],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
         except Exception:
             log.exception("Failed to create startup shortcut")
@@ -188,7 +197,8 @@ class TrayIcon(QObject):
             self._tray.showMessage(
                 "Open Log Failed",
                 f"Could not open {log_path}",
-                QSystemTrayIcon.MessageIcon.Warning, 5000,
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
             )
 
     @Slot(bool)
@@ -202,5 +212,6 @@ class TrayIcon(QObject):
             self._tray.showMessage(
                 "Autostart Error",
                 "Failed to create startup shortcut. Check logs for details.",
-                QSystemTrayIcon.MessageIcon.Warning, 5000,
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
             )

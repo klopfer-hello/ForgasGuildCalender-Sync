@@ -33,12 +33,18 @@ class PreviewDialog(QDialog):
         layout.addWidget(QLabel(f"<b>Sync Plan:</b> {summary}"))
 
         for err in plan.errors:
-            layout.addWidget(QLabel(f"<span style='color:{DANGER}'>Error: {err}</span>"))
+            layout.addWidget(
+                QLabel(f"<span style='color:{DANGER}'>Error: {err}</span>")
+            )
 
         if plan.entries:
             table = QTableWidget(len(plan.entries), 5)
-            table.setHorizontalHeaderLabels(["Action", "Title", "Date", "Time", "Participants"])
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            table.setHorizontalHeaderLabels(
+                ["Action", "Title", "Date", "Time", "Participants"]
+            )
+            table.horizontalHeader().setSectionResizeMode(
+                1, QHeaderView.ResizeMode.Stretch
+            )
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
 
@@ -53,6 +59,7 @@ class PreviewDialog(QDialog):
                 action_item = QTableWidgetItem(entry.action.value.capitalize())
                 if color:
                     from PySide6.QtGui import QColor
+
                     action_item.setForeground(QColor(color))
                 table.setItem(row, 0, action_item)
                 table.setItem(row, 1, QTableWidgetItem(entry.title))
@@ -79,4 +86,5 @@ class PreviewDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         from fgc_sync.views.styles import apply_acrylic
+
         apply_acrylic(self)

@@ -25,7 +25,12 @@ class _SyncThread(QThread):
 
     sync_done = Signal(object)
 
-    def __init__(self, config: Config, gcal: GoogleCalendarClient, discord: DiscordPoster | None = None):
+    def __init__(
+        self,
+        config: Config,
+        gcal: GoogleCalendarClient,
+        discord: DiscordPoster | None = None,
+    ):
         super().__init__()
         self._config = config
         self._gcal = gcal
@@ -69,7 +74,13 @@ class SyncController(QObject):
 
     sync_completed = Signal(object)  # SyncResult
 
-    def __init__(self, config: Config, gcal: GoogleCalendarClient, discord: DiscordPoster | None = None, parent=None):
+    def __init__(
+        self,
+        config: Config,
+        gcal: GoogleCalendarClient,
+        discord: DiscordPoster | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._config = config
         self._gcal = gcal
@@ -87,7 +98,8 @@ class SyncController(QObject):
             elapsed = time.monotonic() - self._sync_started_at
             if elapsed > _SYNC_TIMEOUT:
                 log.warning(
-                    "Sync thread stuck for %.0fs, force-resetting", elapsed,
+                    "Sync thread stuck for %.0fs, force-resetting",
+                    elapsed,
                 )
                 self._force_reset()
             else:

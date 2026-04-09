@@ -20,6 +20,7 @@ def is_system_dark_mode() -> bool:
     """Check if Windows is using dark mode."""
     try:
         import winreg
+
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",

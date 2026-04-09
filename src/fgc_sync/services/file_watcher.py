@@ -44,7 +44,9 @@ class _ChangeHandler(FileSystemEventHandler):
 class FileWatcher:
     """Watches the SavedVariables directory for changes."""
 
-    def __init__(self, directory: Path, callback, filename: str = SAVED_VARIABLES_FILENAME):
+    def __init__(
+        self, directory: Path, callback, filename: str = SAVED_VARIABLES_FILENAME
+    ):
         self._directory = directory
         self._callback = callback
         self._filename = filename

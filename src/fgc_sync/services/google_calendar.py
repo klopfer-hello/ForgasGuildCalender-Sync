@@ -73,15 +73,15 @@ class GoogleCalendarClient:
         result = []
         page_token = None
         while True:
-            response = (
-                service.calendarList().list(pageToken=page_token).execute()
-            )
+            response = service.calendarList().list(pageToken=page_token).execute()
             for item in response.get("items", []):
-                result.append({
-                    "id": item["id"],
-                    "summary": item.get("summary", ""),
-                    "primary": item.get("primary", False),
-                })
+                result.append(
+                    {
+                        "id": item["id"],
+                        "summary": item.get("summary", ""),
+                        "primary": item.get("primary", False),
+                    }
+                )
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
@@ -97,7 +97,9 @@ class GoogleCalendarClient:
         location: str = "",
     ) -> str:
         """Create a calendar event. Returns the Google event ID."""
-        body = self._build_event_body(summary, start, duration_hours, description, location)
+        body = self._build_event_body(
+            summary, start, duration_hours, description, location
+        )
         event = (
             self._get_service()
             .events()
@@ -117,7 +119,9 @@ class GoogleCalendarClient:
         location: str = "",
     ):
         """Update an existing calendar event."""
-        body = self._build_event_body(summary, start, duration_hours, description, location)
+        body = self._build_event_body(
+            summary, start, duration_hours, description, location
+        )
         (
             self._get_service()
             .events()
@@ -136,6 +140,7 @@ class GoogleCalendarClient:
             y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
             from datetime import date as dt_date
             from datetime import timedelta
+
             next_day = dt_date(y, m, d) + timedelta(days=2)
             time_max = f"{next_day.isoformat()}T00:00:00+00:00"
 
@@ -187,7 +192,9 @@ class GoogleCalendarClient:
         if self._service is None:
             if not self._creds:
                 raise RuntimeError("Not authenticated")
-            http = AuthorizedHttp(self._creds, http=httplib2.Http(timeout=_HTTP_TIMEOUT))
+            http = AuthorizedHttp(
+                self._creds, http=httplib2.Http(timeout=_HTTP_TIMEOUT)
+            )
             self._service = build("calendar", "v3", http=http)
         return self._service
 

@@ -33,6 +33,8 @@ def cleanup_after_update():
                 log.info("Cleaned up %s", leftover.name)
             except OSError:
                 pass
+
+
 _HEADERS = {"User-Agent": f"FGC-Sync/{__version__}"}
 
 
@@ -113,10 +115,7 @@ def _update_pip() -> str:
         # Write a small batch script that waits, upgrades, and self-deletes
         script_path = Path(tempfile.gettempdir()) / "fgc_sync_pip_update.cmd"
         script = (
-            "@echo off\r\n"
-            "timeout /t 3 /nobreak >nul\r\n"
-            f"{pip_cmd}\r\n"
-            'del "%~f0"\r\n'
+            f'@echo off\r\ntimeout /t 3 /nobreak >nul\r\n{pip_cmd}\r\ndel "%~f0"\r\n'
         )
         script_path.write_text(script, encoding="ascii")
         CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -149,8 +148,11 @@ def _update_exe(info: UpdateInfo) -> str:
     # Download (allow_redirects for GitHub CDN, generous timeout)
     log.info("Downloading %s", info.download_url)
     resp = requests.get(
-        info.download_url, headers=_HEADERS,
-        stream=True, timeout=(15, 300), allow_redirects=True,
+        info.download_url,
+        headers=_HEADERS,
+        stream=True,
+        timeout=(15, 300),
+        allow_redirects=True,
     )
     resp.raise_for_status()
 
@@ -177,21 +179,21 @@ def _update_exe(info: UpdateInfo) -> str:
     script_path = Path(tempfile.gettempdir()) / "fgc_sync_update.cmd"
     backup_path = exe_path.with_suffix(".exe.bak")
     script = (
-        '@echo off\r\n'
-        'timeout /t 5 /nobreak >nul\r\n'
+        "@echo off\r\n"
+        "timeout /t 5 /nobreak >nul\r\n"
         f'if exist "{backup_path}" del "{backup_path}"\r\n'
         f'move "{exe_path}" "{backup_path}"\r\n'
-        f'if errorlevel 1 (\r\n'
+        f"if errorlevel 1 (\r\n"
         f'  del "{update_path}"\r\n'
         f'  del "%~f0"\r\n'
-        f'  exit /b 1\r\n'
-        f')\r\n'
+        f"  exit /b 1\r\n"
+        f")\r\n"
         f'move "{update_path}" "{exe_path}"\r\n'
-        f'if errorlevel 1 (\r\n'
+        f"if errorlevel 1 (\r\n"
         f'  move "{backup_path}" "{exe_path}"\r\n'
         f'  del "%~f0"\r\n'
-        f'  exit /b 1\r\n'
-        f')\r\n'
+        f"  exit /b 1\r\n"
+        f")\r\n"
         f'del "{backup_path}"\r\n'
         f'del "%~f0"\r\n'
     )

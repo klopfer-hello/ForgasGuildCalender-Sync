@@ -36,6 +36,7 @@ def _resolve_version() -> str:
     # 3. Package metadata (pip install from wheel/git without source)
     try:
         from importlib.metadata import metadata
+
         return metadata("fgc-sync")["Version"]
     except Exception:
         pass
@@ -63,9 +64,4 @@ LICENSE_TEXT = (
 
 
 def about_text() -> str:
-    return (
-        f"{APP_NAME} v{__version__}\n"
-        f"{PROJECT_URL}\n"
-        f"\n"
-        f"{LICENSE_TEXT}"
-    )
+    return f"{APP_NAME} v{__version__}\n{PROJECT_URL}\n\n{LICENSE_TEXT}"

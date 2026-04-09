@@ -76,7 +76,8 @@ class WowPathPage(QWizardPage):
         self._account_combo.clear()
         if wtf.is_dir():
             accounts = [
-                d.name for d in wtf.iterdir()
+                d.name
+                for d in wtf.iterdir()
                 if d.is_dir() and d.name != "SavedVariables"
             ]
             self._account_combo.addItems(accounts)
@@ -105,8 +106,12 @@ class WowPathPage(QWizardPage):
         if not wow:
             return None
         return (
-            Path(wow) / "WTF" / "Account" / account
-            / "SavedVariables" / SAVED_VARIABLES_FILENAME
+            Path(wow)
+            / "WTF"
+            / "Account"
+            / account
+            / "SavedVariables"
+            / SAVED_VARIABLES_FILENAME
         )
 
     def validatePage(self) -> bool:
@@ -120,7 +125,9 @@ class WowPathPage(QWizardPage):
 
         sv_file = self._sv_file_path(account)
         if not sv_file or not sv_file.exists():
-            QMessageBox.warning(self, "Not Found", f"SavedVariables not found:\n{sv_file}")
+            QMessageBox.warning(
+                self, "Not Found", f"SavedVariables not found:\n{sv_file}"
+            )
             return False
 
         self._config.set("wow_path", wow_path)
@@ -164,7 +171,9 @@ class DiscordPage(QWizardPage):
 
         layout.addWidget(QLabel("Forum Channel ID:"))
         self._forum_edit = QLineEdit()
-        self._forum_edit.setPlaceholderText("Right-click forum channel → Copy Channel ID")
+        self._forum_edit.setPlaceholderText(
+            "Right-click forum channel → Copy Channel ID"
+        )
         layout.addWidget(self._forum_edit)
 
         layout.addStretch()
@@ -189,7 +198,9 @@ class DiscordPage(QWizardPage):
             self._forum_edit.setText(values.get("discord_forum_id", ""))
             self._code_edit.clear()
         else:
-            QMessageBox.warning(self, "Invalid Code", "The setup code is invalid or corrupted.")
+            QMessageBox.warning(
+                self, "Invalid Code", "The setup code is invalid or corrupted."
+            )
 
     def validatePage(self) -> bool:
         if self.wizard().skipped_page:
@@ -203,7 +214,8 @@ class DiscordPage(QWizardPage):
         filled = [bool(token), bool(guild_id), bool(forum_id)]
         if any(filled) and not all(filled):
             QMessageBox.warning(
-                self, "Incomplete",
+                self,
+                "Incomplete",
                 "Please fill all three fields or press Skip.",
             )
             return False
@@ -248,7 +260,8 @@ class GoogleLoginPage(QWizardPage):
         try:
             if not self._config.client_secrets_path.exists():
                 QMessageBox.critical(
-                    self, "Missing Credentials",
+                    self,
+                    "Missing Credentials",
                     f"client_secrets.json not found at:\n{self._config.client_secrets_path}",
                 )
                 return
@@ -268,7 +281,8 @@ class GoogleLoginPage(QWizardPage):
             return True
         if not self._authenticated:
             QMessageBox.warning(
-                self, "Not Logged In",
+                self,
+                "Not Logged In",
                 "Please login with Google or press Skip.",
             )
             return False
@@ -351,7 +365,9 @@ class SetupWizard(QWizard):
         # Reset skip flag when navigating normally
         self.skipped_page = False
         is_optional = page_id in (
-            _PAGE_DISCORD, _PAGE_GOOGLE_LOGIN, _PAGE_CALENDAR,
+            _PAGE_DISCORD,
+            _PAGE_GOOGLE_LOGIN,
+            _PAGE_CALENDAR,
         )
         self.button(QWizard.WizardButton.CustomButton1).setVisible(is_optional)
 
@@ -369,4 +385,5 @@ class SetupWizard(QWizard):
         super().showEvent(event)
         self.button(QWizard.WizardButton.CustomButton1).setVisible(False)
         from fgc_sync.views.styles import apply_acrylic
+
         apply_acrylic(self)
