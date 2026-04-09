@@ -262,11 +262,11 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 if remote:
                     existing = {
                         "channel_id": remote["channel_id"],
-                        "message_ids": remote,
-                        # Seed pinged with the current roster on adoption so we
-                        # don't re-ping members that the original creator client
-                        # already pinged.
-                        "pinged": list(confirmed_names),
+                        "message_ids": {
+                            "image_id": remote.get("image_id"),
+                            "hash": remote.get("hash"),
+                        },
+                        "pinged": [],
                     }
                     log.info("Discord: adopted existing thread for %s", evt.title)
 
