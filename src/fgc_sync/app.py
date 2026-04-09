@@ -41,9 +41,9 @@ def _main():
     )
     args, _ = parser.parse_known_args()
 
-    if args.config_dir:
-        from pathlib import Path
+    from pathlib import Path
 
+    if args.config_dir:
         config_dir = Path(args.config_dir)
         config_dir.mkdir(parents=True, exist_ok=True)
         config = Config(config_dir / "config.json")
@@ -69,6 +69,7 @@ def _main():
 
     cleanup_after_update()
 
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from fgc_sync.controllers.app_controller import AppController
@@ -77,6 +78,11 @@ def _main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("FGC Sync")
+
+    icon_path = Path(__file__).resolve().parent.parent.parent / "resources" / "app.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     app.setStyleSheet(get_stylesheet())
 
     # Store controller on the QApplication to prevent garbage collection
