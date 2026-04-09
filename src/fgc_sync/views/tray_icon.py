@@ -26,15 +26,21 @@ log = logging.getLogger(__name__)
 
 def _exe_path() -> str:
     """Return the path to fgc-sync.exe, checking multiple locations."""
-    # 1. Next to the running interpreter (works when launched from the correct venv)
-    candidate = Path(sys.executable).parent / "fgc-sync.exe"
+    exe_name = "fgc-sync.exe"
+    interpreter_dir = Path(sys.executable).parent
+    # 1. Next to the running interpreter (venv where python.exe is in Scripts/)
+    candidate = interpreter_dir / exe_name
     if candidate.exists():
         return str(candidate)
-    # 2. Resolve via PATH (works when installed in a different venv/environment)
+    # 2. In Scripts/ subdirectory (system Python where python.exe is in root)
+    scripts_candidate = interpreter_dir / "Scripts" / exe_name
+    if scripts_candidate.exists():
+        return str(scripts_candidate)
+    # 3. Resolve via PATH
     found = shutil.which("fgc-sync")
     if found:
         return found
-    # 3. Fallback to the original assumption
+    # 4. Fallback
     return str(candidate)
 
 
@@ -48,6 +54,7 @@ def set_autostart(enabled: bool):
         try:
             import subprocess
             exe = _exe_path()
+            log.info("Creating startup shortcut targeting: %s", exe)
             ps_script = (
                 "$ws = New-Object -ComObject WScript.Shell; "
                 f"$sc = $ws.CreateShortcut('{shortcut}'); "
