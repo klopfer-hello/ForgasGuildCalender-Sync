@@ -160,9 +160,15 @@ class DiscordPoster:
         }
 
     def delete_thread(self, thread_id: str):
-        """Delete a forum thread."""
-        self._request("DELETE", f"/channels/{thread_id}")
-        log.info("Discord: deleted thread %s", thread_id)
+        """Delete a forum thread. Silently succeeds if already deleted."""
+        try:
+            self._request("DELETE", f"/channels/{thread_id}")
+            log.info("Discord: deleted thread %s", thread_id)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                log.info("Discord: thread %s already deleted", thread_id)
+            else:
+                raise
 
     def thread_exists(self, thread_id: str) -> bool:
         """Check if a thread still exists."""
