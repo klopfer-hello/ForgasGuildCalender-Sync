@@ -193,6 +193,7 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 | `discord_guild_id` | Discord server ID (optional) |
 | `discord_forum_id` | Forum channel ID for raid threads (optional) |
 | `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids: {image_id, hash, sv_mtime}, pinged[]}}` |
+| `log_level` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default: `ERROR`) |
 
 ### Credential Files
 
