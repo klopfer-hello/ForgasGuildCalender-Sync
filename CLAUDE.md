@@ -1,27 +1,31 @@
-# ForgasGuildCalendar-Sync – Project Context for Claude
+# ForgasGuildCalendar-Sync — Project Context
 
 ## Overview
 
-System tray companion tool for the **Forga's Guild Calendar** WoW addon. Reads raid/event data from the addon's SavedVariables file and syncs it to Google Calendar and/or Discord. Runs as a background process with file watching and periodic polling.
+System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/event data from SavedVariables and syncs to Google Calendar and/or Discord. Runs as a Windows tray app or headless Linux CLI.
 
 ## Environment
 
 - Python >= 3.12 (tested on 3.14)
-- **Windows GUI mode**: PySide6 system tray + dialogs, entry point `fgc-sync`
-- **Linux/headless CLI mode**: no Qt required, entry point `fgc-sync-cli`, designed for cron
-- Install: `pip install -e .` (CLI only) or `pip install -e ".[gui]"` (with PySide6)
+- **Windows GUI**: PySide6 system tray + dialogs, entry point `fgc-sync`
+- **Linux/headless CLI**: no Qt required, entry point `fgc-sync-cli`, designed for cron
+- Install: `pip install -e .` (CLI) or `pip install -e ".[gui]"` (with PySide6)
 
 ## Source Data
 
 - WoW addon: **Forga's Guild Calendar** (ForgasGuildCalendar)
-- SavedVariables file: `WTF/Account/<id>/SavedVariables/ForgasGuildCalendar.lua`
+- SavedVariables: `WTF/Account/<id>/SavedVariables/ForgasGuildCalendar.lua`
 - Global variable: `FGC_DB`
 - Event path: `FGC_DB.profiles[profile].guildScoped[guildKey].events["YYYY-MM-DD"][]`
-- Time field: always use `serverTimeMinutes` (minutes from midnight), not `serverHour`/`serverMinute` (often missing)
-- Server timezone: EU Thunderstrike = `Europe/Berlin`
-- Character detection: auto-detected from `FGC_DB.profileKeys` (format: `"Name - Realm"`)
+- Time: always use `serverTimeMinutes` (minutes from midnight), not `serverHour`/`serverMinute`
+- Timezone: EU Thunderstrike = `Europe/Berlin`
+- Characters: auto-detected from `FGC_DB.profileKeys` (format `"Name - Realm"`)
 
-## Architecture (MVC)
+---
+
+## Architecture
+
+### MVC Layer Structure
 
 ```
 src/fgc_sync/
@@ -32,12 +36,12 @@ src/fgc_sync/
 │   └── update.py    #   UpdateInfo, InstallMode
 │
 ├── services/        # Business logic (no UI, no Qt)
-│   ├── config.py    #   JSON config in %APPDATA%
+│   ├── config.py    #   JSON config + setup codes + transactions
 │   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
-│   ├── discord_poster.py     #   Discord REST API (forum threads + images + pings)
+│   ├── discord_poster.py    #   Discord REST API (forum threads + images + pings)
 │   ├── roster_image.py      #   Pillow-based roster card renderer
 │   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
-│   ├── sync_engine.py       #   Diff & sync (create/update/delete)
+│   ├── sync_engine.py       #   Diff & sync (create/update/delete) + dry-run plans
 │   ├── file_watcher.py      #   Watchdog observer with debounce
 │   └── updater.py           #   GitHub release check + self-update
 │
@@ -48,11 +52,11 @@ src/fgc_sync/
 ├── views/           # V — Pure Qt UI, emits signals
 │   ├── styles.py            #   System-aware light/dark stylesheet
 │   ├── tray_icon.py         #   System tray icon + menu
-│   ├── setup_wizard.py      #   First-run: WoW path → Discord → Google → calendar
+│   ├── setup_wizard.py      #   First-run wizard (WoW → Discord → Google)
 │   ├── settings_dialog.py   #   Post-setup config changes
 │   └── preview_dialog.py    #   Sync preview table
 │
-├── _version.py      # Version, license metadata, GitHub repo constant
+├── _version.py      # Version, license, GitHub repo constant
 ├── app.py           # QApplication bootstrap (Windows GUI)
 ├── cli.py           # Headless CLI entry point (Linux/cron)
 └── __main__.py      # python -m fgc_sync (auto-detects mode)
@@ -60,137 +64,151 @@ src/fgc_sync/
 
 ### Dependency Rules
 
-- Models depend on **nothing**
-- Services depend on **models** and external libraries only
-- Controllers depend on **services** and **models**
-- Views depend on **models** (for display) and **Qt** only
+- **Models** depend on nothing
+- **Services** depend on models and external libraries only
+- **Controllers** depend on services and models
+- **Views** depend on models (for display) and Qt only
 - Views never call services directly — controllers mediate
 
-## Key Behaviors
+### File Structure
 
-### Sync Logic (`sync_engine.py`)
+```
+ForgasGuildCalendar-Sync/
+├── pyproject.toml              # Package config, dependencies, ruff config
+├── .pre-commit-config.yaml     # Pre-commit hooks (ruff, format, conventional commits)
+├── .github/workflows/
+│   ├── release.yml             # PyInstaller build + GitHub release on tag push
+│   ├── lint.yml                # Pre-commit + pytest CI on push/PR
+│   └── cleanup-releases.yml    # Delete old releases (keep latest)
+├── codecov.yml                 # Coverage reporting config
+├── resources/
+│   ├── app.ico                 # Application icon (purple G, 16-256px)
+│   └── class_icons/            # WoW class icons for roster images
+├── src/fgc_sync/               # Package source (see above)
+└── tests/                      # pytest unit tests
+```
+
+---
+
+## Google Calendar Sync
+
+### Sync Logic (`sync_engine.py` → `execute_sync`)
 
 1. Parse SavedVariables, extract future events
-2. Filter to events where one of the user's characters is **Signed** (1) or **Confirmed** (2)
+2. Filter to events where the user's character is **Signed** (1) or **Confirmed** (2)
 3. For each event:
-   - **Not in mapping** → search Google Calendar for existing event with same title+date (dedup), adopt if found, else create
-   - **In mapping, revision changed** → verify event exists in Google, update or re-create
-   - **In mapping, revision same** → verify event exists in Google, re-create if deleted externally, else skip
+   - **Not in mapping** → search Google Calendar for duplicate (same title+date), adopt if found, else create
+   - **In mapping, revision changed** → verify exists in Google, update or re-create
+   - **In mapping, revision same** → verify exists, re-create if deleted externally, else skip
 4. Events in mapping but not in WoW (or in `deletedEvents`) → delete from Google Calendar
-5. Persist updated mapping to config
+5. Persist `event_mapping` to config
 
-### Discord Sync Logic (`sync_engine.py` → `execute_discord_sync`)
+### Google Calendar Event Format
 
-Runs after Google Calendar sync on every sync cycle. Uses `discord_message_mapping` in config.
-Only posts events within the next 7 days that have a confirmed roster (group assignments).
+- **Summary**: `[Type] Title (CharacterName)` e.g. `[Raid] Gruul mit Forga (Klopfbernd)`
+- **Start**: date + serverTimeMinutes in configured timezone
+- **Duration**: configurable, default 3 hours
+- **Description**: event comment + participant counts + roster breakdown
+- **Location**: raid name (titlecased)
 
-1. **Stale-data guard**: read local SavedVariables file mtime; scan recent messages of all forum threads for the highest `_t<unix_ts>` embedded in any roster image filename. If local mtime < remote max → skip the entire Discord sync (another client has newer data; overwriting would cause flapping images and duplicate pings).
-2. Collect all future guild events (not filtered by personal participation)
+---
+
+## Discord Sync
+
+### Sync Logic (`sync_engine.py` → `execute_discord_sync`)
+
+Runs after Google Calendar sync. Posts events within the next 7 days (`DISCORD_LOOKAHEAD_DAYS`) that have a confirmed roster (group assignments).
+
+1. **Stale-data guard** (`_is_local_data_stale`): compares local SavedVariables mtime against the highest `_t<unix_ts>` in remote image filenames. If local is older → skip entire sync.
+2. Collect future guild events (not filtered by personal participation)
 3. For each event:
-   - **Not in mapping** → call `find_existing_thread` (matches by deterministic thread name first, then attachment scan for legacy threads). If found → adopt with empty `pinged` list (so `ping_members` can resolve and ping on the next pass). Otherwise → create forum thread with roster image as starter message.
-   - **In mapping, content hash changed** → ensure thread is unarchived, then update image in place (PATCH), or post a new image if the original was deleted
-   - **In mapping, hash unchanged** → ensure thread is unarchived, fall through to ping retry only
-   - **Ping retry**: compute `to_ping = current_confirmed - pinged`. Ping anyone in the diff (label "Confirmed" for new threads, "Newly confirmed" otherwise). `ping_members` returns the subset of names that actually resolved to a Discord member; only those are added to `pinged`. Names that fail to resolve (e.g. user not yet in the Discord server) are retried on the next sync.
-4. Events no longer in WoW (or in `deletedEvents`) → delete thread
-5. Events that happened 24+ hours ago → delete thread
-6. Persist `discord_message_mapping` to config
+   - **Not in mapping** → `find_existing_thread` (name match first, then attachment scan via `_find_image_in_thread`). If found → adopt with empty `pinged` list. Otherwise → create forum thread with roster image.
+   - **In mapping, hash changed** → unarchive thread, PATCH image in place (or find original image if mapping lost track, then PATCH)
+   - **In mapping, hash unchanged** → unarchive thread, fall through to ping retry
+   - **Ping logic**: scan thread history for prior bot pings (`get_already_pinged_names`), compute `to_ping = confirmed - already_pinged`, send ping message. Only resolved names are added to `pinged`.
+4. **Cleanup**: delete threads for removed events and events older than 24 hours (`EXPIRED_EVENT_HOURS`)
+5. Persist `discord_message_mapping` to config
 
-**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Thread-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones. Ping dedup scans the thread's message history for bot messages (`get_already_pinged_names`) to avoid re-pinging members that another client already pinged.
+### Forum Threads
 
-### Dry-Run Mode (`compute_discord_sync_plan`)
+- **Thread name**: `Do 03.04. 20:00 — Gruul mit Forga` (German weekday, date, time, short raid name, creator)
+- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (`RAID_SHORT_NAMES`)
+- **Starter message**: roster image posted as part of thread creation
+- **Pings**: "Confirmed:" on creation, "Newly confirmed:" on updates
+- **Cleanup**: threads deleted 24h after event start; 404 on already-deleted threads is silently ignored
+- Threads are created in chronological order
 
-`--dry-run` uses `compute_sync_plan` (Google Calendar) and `compute_discord_sync_plan` (Discord) to show what would happen without modifying any remote state or local config. The Discord plan queries existing threads and scans ping history read-only.
-
-### Setup Code
-
-`encode_setup_code` / `decode_setup_code` in `config.py` encode the Discord config (`discord_bot_token`, `discord_guild_id`, `discord_forum_id`) into a compact obfuscated string (JSON → zlib → base64url, prefixed `fgc1-`). Generated via `--export-code`, consumed during CLI or GUI setup.
-
-### Config Transactions
-
-`Config.begin_transaction()` / `commit_transaction()` / `rollback_transaction()` buffer writes during setup so that cancelling the wizard or CLI setup does not leave a partial `config.json` on disk.
-
-**Mapping schema** (`discord_message_mapping[event_id]`):
-- `channel_id`: Discord thread id (threads are channels in Discord's API)
-- `message_ids`: `{image_id, hash, sv_mtime}`
-- `pinged`: list of character names that have been successfully pinged so far. Legacy entries may use `confirmed` instead — read code falls back automatically.
-
-### Discord Roster Images (`roster_image.py`)
+### Roster Images (`roster_image.py`)
 
 - Rendered via Pillow at 2x resolution
 - **Header**: day of week, date, time, event title, location, participant counts
-- **Groups**: confirmed participants in their assigned raid groups (1–8), with role icons (shield/cross/sword) and class icons
+- **Groups**: confirmed participants in raid groups (1–8) with role and class icons
 - **Sections**: Signed, Bench (no Declined)
 - **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
 
-### Discord Per-Event Forum Threads
+### Member Matching
 
-Each event with a confirmed roster gets its own thread in a Discord forum channel:
-- **Thread name**: `Do 03.04. 20:00 — Gruul mit Forga` (German weekday, date, time, short raid name, creator)
-- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (see `RAID_SHORT_NAMES` in `discord_poster.py`)
-- **Starter message**: roster image posted as part of thread creation (single API call)
-- **Visibility**: public to all server members
-- **Auto-archive handling**: threads are automatically unarchived before posting updates or pings
-- **Pings**: one-off notification messages — "Confirmed:" on creation, "Newly confirmed:" on updates
-- **Cleanup**: threads are deleted 24 hours after the event start time
-- Threads are created in chronological order (sorted by date and time)
+WoW character name matched as **case-insensitive substring** of Discord server nickname, display name, or username. Requires **Server Members Intent** on the bot.
 
-### Discord Member Matching
+### Multi-Client Safety
 
-Members are matched by checking if the WoW character name is a **case-insensitive substring** of the Discord member's server nickname, global display name, or username. The bot requires the **Server Members Intent** enabled in the Discord Developer Portal.
+- Image filename: `roster_<event_id>_h<hash>_t<sv_mtime>.png`
+- Thread dedup: deterministic thread names prevent duplicate creation
+- Image dedup: `_find_image_in_thread` scans up to 100 messages before posting a new image
+- Ping dedup: `get_already_pinged_names` scans thread history for prior bot pings
+- Stale-data guard: clients with older SavedVariables skip writing
 
-### Discord Bot Setup
+### Mapping Schema (`discord_message_mapping[event_id]`)
 
-1. Create a Discord application at discord.com/developers
-2. Bot tab: create bot, copy token, enable **Server Members Intent**
-3. OAuth2 → URL Generator: scope `bot`, permissions: **Send Messages**, **Manage Threads**, **Read Message History**
-4. Invite bot to your server
-5. Create a **forum channel** in Discord (e.g. "Raids")
-6. In the forum channel's permission settings, give the bot role **Manage Threads** and **Send Messages in Threads** — this scopes the bot's thread creation/deletion to that forum
-7. Right-click the forum channel → Copy Channel ID
-8. In the app's Settings, fill in Bot Token, Server ID, and Forum Channel ID
+- `channel_id`: Discord thread ID
+- `message_ids`: `{image_id, hash, sv_mtime}`
+- `pinged`: list of character names successfully pinged (legacy: `confirmed`)
 
-### Auto-sync Triggers
+---
+
+## CLI
+
+- Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
+- Runs a single sync cycle and exits — designed for cron
+- No Qt/PySide6 dependency
+- Flags: `--dry-run`, `--discord-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
+- Interactive setup on first run using `questionary`
+- Handles git bash `/d/...` paths on Windows (`_normalize_path`)
+- Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
+
+### Dry-Run Mode
+
+`--dry-run` uses `compute_sync_plan` (Google) and `compute_discord_sync_plan` (Discord) to show planned actions without modifying any remote state or local config. Includes the stale-data guard check.
+
+### Setup Codes
+
+`encode_setup_code` / `decode_setup_code` in `config.py` encode Discord config into a compact obfuscated string (JSON → zlib → base64url, prefixed `fgc1-`). Generated via `--export-code`, consumed during CLI or GUI setup.
+
+---
+
+## Auto-Sync Triggers (GUI)
 
 - **File watcher**: watchdog monitors SavedVariables directory, 2s debounce
 - **Poll timer**: every 5 minutes as fallback
 - **Manual**: "Sync Now" from tray menu
 
-The tray menu also has **"Open Log File"** which opens `%APPDATA%/ForgasGuildCalendar-Sync/sync.log` with the OS default handler.
+## Auto-Update (`updater.py`)
 
-### Linux / Headless CLI
+- Queries GitHub Releases API for latest version
+- **GUI**: checks at startup + every 6 hours, shows popup
+- **CLI**: logs a message after sync; `--update` to install
+- **Exe mode**: downloads new exe, writes a `.cmd` swap script, exits
+- **Pip mode**: Windows spawns detached batch script; Linux runs `pip install --upgrade` directly
+- Cleans up `.bak`/`.update` files on startup
+- Skips check if version is `"dev"`
 
-- Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
-- Runs a single sync cycle and exits — designed for cron
-- No Qt/PySide6 dependency required
-- Flags: `--dry-run`, `--discord-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
-- Interactive setup on first run using `questionary` (arrow-key select, tab path completion)
-- Handles git bash `/d/...` paths on Windows automatically
-- Checks for updates after every sync run (log message only)
-- Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
-- Cron example: `*/5 * * * * /path/to/fgc-sync-cli`
-
-### Auto-Update (`updater.py`)
-
-- Queries GitHub releases API for latest version
-- Compares with current version from package metadata (`_version.py`)
-- **GUI**: checks at startup + every 6 hours, shows popup with Update Now / Later
-- **CLI**: logs a message after sync if newer version exists; `--update` to install
-- **Exe mode**: downloads new exe, writes a `.cmd` swap script, exits, script replaces exe (no auto-restart to avoid DLL conflicts)
-- **Pip mode**: on Windows spawns a detached batch script; on Linux runs `pip install --upgrade` directly
-- Cleans up leftover `.bak`/`.update` files on startup
-- Skips check if version is `"dev"` (editable install without metadata)
-
-### Google Calendar Events
-
-- **Summary**: `[Type] Title (CharacterName)` e.g. `[Raid] Gruul mit Forga (Klopfbernd)`
-- **Start**: date + serverTimeMinutes in Europe/Berlin
-- **Duration**: configurable, default 3 hours
-- **Description**: event comment + participant counts + roster
-- **Location**: raid name (titlecased)
+---
 
 ## Configuration
 
-Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
+### Config File
+
+Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.config/ForgasGuildCalendar-Sync/config.json` (Linux):
 
 | Key | Purpose |
 |-----|---------|
@@ -200,72 +218,56 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json`:
 | `calendar_id` | Google Calendar ID |
 | `timezone` | IANA timezone (default: `Europe/Berlin`) |
 | `default_duration_hours` | Event duration (default: 3) |
+| `log_level` | Logging verbosity (default: `ERROR`) |
 | `event_mapping` | `{fgc_eventId: {google_id, revision, title}}` |
 | `discord_bot_token` | Discord bot token (optional) |
 | `discord_guild_id` | Discord server ID (optional) |
-| `discord_forum_id` | Forum channel ID for raid threads (optional) |
-| `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids: {image_id, hash, sv_mtime}, pinged[]}}` |
-| `log_level` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default: `ERROR`) |
+| `discord_forum_id` | Forum channel ID (optional) |
+| `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids, pinged[]}}` |
+
+### Config Transactions
+
+`Config.begin_transaction()` / `commit_transaction()` / `rollback_transaction()` buffer writes during setup so cancelling doesn't leave partial config on disk.
 
 ### Credential Files
 
-- `%APPDATA%/ForgasGuildCalendar-Sync/token.json` — OAuth2 token (auto-refreshed)
-- `client_secrets.json` — Google OAuth client ID (looked up next to project root first, then %APPDATA%)
+- `token.json` — Google OAuth2 token (auto-refreshed)
+- `client_secrets.json` — Google OAuth client ID (looked up next to project root first, then AppData)
 
-## File Structure
+---
 
-```
-ForgasGuildCalendar-Sync/
-├── pyproject.toml           # Package config, dependencies, entry point
-├── LICENSE                  # MIT license
-├── CLAUDE.md                # This file
-├── README.md                # User-facing documentation
-├── .gitignore
-├── .github/workflows/
-│   └── release.yml          # PyInstaller build + GitHub release on tag push
-├── client_secrets.json      # Google OAuth (gitignored)
-├── resources/
-│   ├── app.ico              # Application icon (purple G, 16-256px)
-│   └── class_icons/         # WoW class icons for roster images
-├── src/fgc_sync/            # Package source (see Architecture above)
-└── tests/
-    └── __init__.py
-```
+## Development
 
-## Versioning
+### Versioning
 
-- Schema: **Semantic Versioning** (`MAJOR.MINOR.PATCH`)
-- Version lives in `pyproject.toml` (`version = "X.Y.Z"`)
-- Releases are Git tags: `git tag vX.Y.Z`
+Semantic Versioning (`MAJOR.MINOR.PATCH`). Version lives in `pyproject.toml`. Releases are git tags (`git tag vX.Y.Z`).
 
 | Bump | When |
 |------|------|
-| `PATCH` | Bug fixes without new features |
+| `PATCH` | Bug fixes |
 | `MINOR` | New features, backwards compatible |
 | `MAJOR` | Breaking changes (e.g. config format) |
 
 ### Release Checklist
 
-1. `git log vX.Y.Z..HEAD --oneline` — review commits since last release
-2. Determine version bump (PATCH / MINOR / MAJOR)
-3. Update `pyproject.toml` — `version = "X.Y.Z"`
-4. Update `CLAUDE.md` if architecture, features, or conventions changed
+1. `git log vX.Y.Z..HEAD --oneline` — review commits
+2. Determine version bump
+3. Update `pyproject.toml` version
+4. Update `CLAUDE.md` if architecture or conventions changed
 5. Commit: `chore: release vX.Y.Z`
 6. Tag: `git tag vX.Y.Z` (triggers CI build + GitHub release)
 
-## Commit Requirements
+### Commit Convention
 
-Commits must follow the **Conventional Commits** standard:
+Enforced by pre-commit hook (`conventional-pre-commit`):
 
 ```
 <type>(<scope>): <description>
 
-<body>  ← optional, explains the "why"
+<body>
 
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ```
-
-### Allowed Types
 
 | Type | When |
 |------|------|
@@ -274,14 +276,25 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 | `refactor` | Restructuring without behavior change |
 | `docs` | Documentation only |
 | `chore` | Build, config, dependencies |
+| `style` | Formatting (no logic change) |
+| `test` | Adding or updating tests |
 
-### Rules
+Rules: English, lowercase description, no trailing period. Each logically separate change gets its own commit. Never use `--no-verify` or force-push without explicit request.
 
-- Description in **English**, lowercase, no period at the end
-- Body in English, explains concretely what and why
-- Each logically separate change gets its own commit
-- Always append `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`
-- Never use `--no-verify` or force-push without explicit request
+### Code Quality
+
+Pre-commit hooks: ruff lint + format, trailing whitespace, end-of-file, YAML/TOML validation, merge conflict detection, conventional commits.
+
+CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codecov.
+
+### Testing
+
+- Tests in `tests/` using pytest
+- Black-box style: test public function inputs/outputs, not internals
+- Coverage excludes Qt-dependent modules (views, controllers, app.py)
+- Run locally: `pytest tests/ -v`
+
+---
 
 ## Code Review Rules
 
@@ -294,26 +307,27 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 ### Quality
 
-- No magic numbers — use enums (`Attendance`, `EventType`, `SyncAction`) and named constants
-- No duplicated Google Calendar path construction — use `config.saved_variables_path`
-- The `SAVED_VARIABLES_FILENAME` constant lives in `services/config.py`
+- No magic numbers — use enums and named constants (e.g. `EXPIRED_EVENT_HOURS`, `_MESSAGE_SCAN_LIMIT`)
+- Use `config.saved_variables_path` for path construction
+- `SAVED_VARIABLES_FILENAME` lives in `services/config.py`
 
-### Google Calendar Sync
+### Google Calendar
 
-- Always verify events exist before assuming they do (externally deleted events)
-- Always search for duplicates before creating (lost mapping scenario)
+- Always verify events exist before assuming (externally deleted)
+- Always search for duplicates before creating (lost mapping)
 - Use `serverTimeMinutes` for time, never `serverHour`/`serverMinute` alone
-- Filter events to only those where the user's character is Signed or Confirmed
+- Filter to events where user's character is Signed or Confirmed
 
-### Discord Sync
+### Discord
 
-- The `pinged` list must only contain names that `ping_members` actually resolved — never pre-seed with unverified names
-- Thread adoption (`find_existing_thread`) must start with an empty `pinged` list
+- `pinged` list must only contain names that `ping_members` actually resolved
+- Thread adoption must start with empty `pinged` list
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
-- Bot requires **Manage Threads** permission on the forum channel to delete threads with replies
+- Before posting a new image, always try `find_image_message` to locate the original
+- Deleting an already-deleted thread (404) must be handled silently
 
 ### UI
 
-- Stylesheet must follow system dark/light mode (`is_system_dark_mode()`)
-- All dialogs use the shared stylesheet from `views/styles.py`
-- Views emit signals for user actions — controllers handle the logic
+- Stylesheet follows system dark/light mode (`is_system_dark_mode()`)
+- All dialogs use shared stylesheet from `views/styles.py`
+- Views emit signals — controllers handle logic
