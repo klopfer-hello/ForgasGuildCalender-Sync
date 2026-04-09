@@ -210,7 +210,9 @@ def main():
             logging.FileHandler(config.app_data_dir / "sync.log", encoding="utf-8"),
         ],
     )
-    logging.getLogger("fgc_sync").setLevel(logging.DEBUG)
+    logging.getLogger("fgc_sync").setLevel(
+        getattr(logging, config.log_level, logging.ERROR)
+    )
     logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
     log = logging.getLogger(__name__)
 

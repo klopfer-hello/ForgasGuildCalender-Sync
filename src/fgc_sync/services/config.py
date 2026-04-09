@@ -78,6 +78,10 @@ class Config:
         )
 
     @property
+    def log_level(self) -> str:
+        return self.get("log_level", "ERROR").upper()
+
+    @property
     def token_path(self) -> Path:
         return self.app_data_dir / "token.json"
 
