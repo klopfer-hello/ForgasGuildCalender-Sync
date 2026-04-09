@@ -201,6 +201,54 @@ The config file is stored at:
 | `timezone` | `Europe/Berlin` | IANA timezone for event times |
 | `default_duration_hours` | `3` | Default event duration in Google Calendar |
 
+## Contributing
+
+Contributions are welcome! Please follow these guidelines:
+
+### Setup
+
+```bash
+git clone https://github.com/klopfer-hello/ForgasGuildCalender-Sync.git
+cd ForgasGuildCalender-Sync
+pip install -e ".[gui]"
+pip install pre-commit pytest
+pre-commit install
+```
+
+### Code quality
+
+Pre-commit hooks run automatically on every commit:
+- **ruff** — linting and auto-fix
+- **ruff-format** — consistent formatting (Black-compatible)
+- **conventional commits** — enforces commit message format
+- **trailing whitespace**, **end-of-file**, **YAML/TOML validation**
+
+### Commit messages
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+```
+
+| Type | When |
+|------|------|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `refactor` | Restructuring without behavior change |
+| `docs` | Documentation only |
+| `chore` | Build, config, dependencies |
+
+### Running tests
+
+```bash
+pytest tests/ -v
+```
+
+### Architecture
+
+See [CLAUDE.md](CLAUDE.md) for the full architecture guide, dependency rules, and code review conventions.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
