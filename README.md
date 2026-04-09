@@ -18,6 +18,10 @@ Both features are optional — configure only what you need.
 
 Runs as a **Windows system tray app** (auto-sync on file changes + 5-minute polling) or as a **headless CLI** for Linux/cron.
 
+## Disclaimer
+
+This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
+
 ## Installation
 
 ### Windows — Standalone executable (recommended)
@@ -262,7 +266,3 @@ pyinstaller --onefile --windowed --name "FGC-Sync" --add-data "resources;resourc
 ```
 
 Other dependencies and their licenses: Pillow (HPND), google-api-python-client (Apache-2.0), requests (Apache-2.0), watchdog (Apache-2.0), slpp (MIT).
-
-## Disclaimer
-
-This is an independent, community-made tool. It is **not affiliated with, endorsed by, or related to** the developers or maintainers of the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) addon. All trademarks and product names belong to their respective owners.
