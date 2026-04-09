@@ -1,0 +1,5 @@
+ignore:
+  - "src/fgc_sync/views/"
+  - "src/fgc_sync/controllers/"
+  - "src/fgc_sync/app.py"
+  - "src/fgc_sync/__main__.py"
