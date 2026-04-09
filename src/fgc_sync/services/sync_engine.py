@@ -304,6 +304,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             # Ping any confirmed members not yet successfully pinged. This
             # also retries members whose Discord account did not exist at
             # the time of the original ping (late server joiners).
+            # Check thread history to catch pings from other clients that
+            # are not reflected in our local mapping.
+            if channel_id and not is_new_thread:
+                history_pinged = discord.get_already_pinged_names(
+                    channel_id, set(confirmed_names),
+                )
+                prev_pinged = prev_pinged | history_pinged
             to_ping = set(confirmed_names) - prev_pinged
             newly_pinged: set[str] = set()
             if to_ping:

@@ -369,6 +369,50 @@ class DiscordPoster:
             log.info("Discord: pinged %d members (%s)", len(mentions), label)
         return resolved
 
+    def get_already_pinged_names(
+        self, channel_id: str, candidate_names: set[str],
+    ) -> set[str]:
+        """Scan thread history for bot ping messages and return character
+        names (from *candidate_names*) that have already been mentioned.
+
+        This makes ping deduplication resilient to multi-client scenarios
+        where the local ``pinged`` list is empty but the thread already
+        contains ping messages from another client.
+        """
+        bot_id = self._get_bot_user_id()
+        if not bot_id:
+            return set()
+
+        try:
+            messages = self._request(
+                "GET", f"/channels/{channel_id}/messages", params={"limit": 100},
+            )
+        except requests.HTTPError:
+            return set()
+
+        # Collect all user IDs the bot has already pinged
+        pinged_user_ids: set[str] = set()
+        for msg in messages or []:
+            if msg.get("author", {}).get("id") != bot_id:
+                continue
+            content = msg.get("content", "")
+            if content.startswith("Confirmed:") or content.startswith("Newly confirmed:"):
+                pinged_user_ids.update(re.findall(r"<@(\d+)>", content))
+
+        if not pinged_user_ids:
+            return set()
+
+        # Reverse-resolve: check which candidate names map to already-pinged IDs
+        result: set[str] = set()
+        for name in candidate_names:
+            user_id = self._find_member_id(name)
+            if user_id and user_id in pinged_user_ids:
+                result.add(name)
+
+        if result:
+            log.debug("Discord: %d names already pinged in thread history", len(result))
+        return result
+
     def message_exists(self, channel_id: str, message_ids: dict | str) -> bool:
         """Check if the image message still exists."""
         msg_id = message_ids["image_id"] if isinstance(message_ids, dict) else message_ids
