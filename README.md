@@ -1,5 +1,12 @@
 # FGC Sync
 
+[![Build](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/actions/workflows/release.yml/badge.svg)](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/actions/workflows/release.yml)
+[![Lint & Test](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/actions/workflows/lint.yml/badge.svg)](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/actions/workflows/lint.yml)
+[![codecov](https://codecov.io/gh/klopfer-hello/ForgasGuildCalender-Sync/graph/badge.svg)](https://codecov.io/gh/klopfer-hello/ForgasGuildCalender-Sync)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Latest Release](https://img.shields.io/github/v/release/klopfer-hello/ForgasGuildCalender-Sync)](https://github.com/klopfer-hello/ForgasGuildCalender-Sync/releases/latest)
+
 Companion tool for the [Forga's Guild Calendar](https://github.com/ForgaNet/ForgasGuildCalendar) WoW addon. Reads raid/event data from the addon's SavedVariables and offers two independent sync features — use either or both:
 
 | Feature | What it does |
