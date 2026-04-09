@@ -81,6 +81,10 @@ def _slugify(text: str, max_len: int = 90) -> str:
 
 
 _HTTP_TIMEOUT = 30  # seconds for all Discord API calls
+_MAX_RETRIES = 3
+_MEMBERS_PER_PAGE = 1000
+_MESSAGE_SCAN_LIMIT = 5
+_PING_HISTORY_SCAN_LIMIT = 100
 
 
 class DiscordPoster:
@@ -193,7 +197,7 @@ class DiscordPoster:
                 log.info("Discord: matched existing thread by name for %s", event.title)
                 try:
                     messages = self._request(
-                        "GET", f"/channels/{th_id}/messages", params={"limit": 5},
+                        "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
                     )
                     for msg in messages or []:
                         for att in msg.get("attachments", []):
@@ -213,7 +217,7 @@ class DiscordPoster:
             th_id = thread["id"]
             try:
                 messages = self._request(
-                    "GET", f"/channels/{th_id}/messages", params={"limit": 5},
+                    "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
                 )
                 if not messages:
                     continue
@@ -251,7 +255,7 @@ class DiscordPoster:
         data = self._request(
             "GET",
             f"/channels/{self._forum_id}/threads/archived/public",
-            params={"limit": 100},
+            params={"limit": _PING_HISTORY_SCAN_LIMIT},
         )
         if data and "threads" in data:
             threads.extend(
@@ -279,7 +283,7 @@ class DiscordPoster:
             th_id = th["id"]
             try:
                 messages = self._request(
-                    "GET", f"/channels/{th_id}/messages", params={"limit": 5},
+                    "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
                 )
             except requests.HTTPError:
                 continue
@@ -385,7 +389,7 @@ class DiscordPoster:
 
         try:
             messages = self._request(
-                "GET", f"/channels/{channel_id}/messages", params={"limit": 100},
+                "GET", f"/channels/{channel_id}/messages", params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
         except requests.HTTPError:
             return set()
@@ -434,12 +438,12 @@ class DiscordPoster:
             batch = self._request(
                 "GET",
                 f"/guilds/{self._guild_id}/members",
-                params={"limit": 1000, "after": after},
+                params={"limit": _MEMBERS_PER_PAGE, "after": after},
             )
             if not batch:
                 break
             members.extend(batch)
-            if len(batch) < 1000:
+            if len(batch) < _MEMBERS_PER_PAGE:
                 break
             after = batch[-1]["user"]["id"]
         log.debug("Fetched %d guild members in %.1fs", len(members), time.monotonic() - _start)
@@ -473,15 +477,12 @@ class DiscordPoster:
 
     # -- HTTP helpers --
 
-    def _upload_image(
-        self, method: str, path: str, image_bytes: bytes, filename: str, content: str,
-    ) -> dict:
-        url = BASE_URL + path
-        files = {"files[0]": (filename, image_bytes, "image/png")}
-        payload = {"content": content} if content else {}
-        for attempt in range(3):
+    def _retry_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Execute an HTTP request with rate-limit retry."""
+        resp = None
+        for _attempt in range(_MAX_RETRIES):
             resp = self._session.request(
-                method, url, data=payload, files=files, timeout=_HTTP_TIMEOUT,
+                method, url, timeout=_HTTP_TIMEOUT, **kwargs,
             )
             if resp.status_code == 429:
                 retry_after = resp.json().get("retry_after", 1.0)
@@ -489,50 +490,38 @@ class DiscordPoster:
                 time.sleep(retry_after)
                 continue
             resp.raise_for_status()
-            return resp.json()
+            return resp
         resp.raise_for_status()
-        return {}
+        return resp  # type: ignore[return-value]
+
+    def _upload_image(
+        self, method: str, path: str, image_bytes: bytes, filename: str, content: str,
+    ) -> dict:
+        files = {"files[0]": (filename, image_bytes, "image/png")}
+        data = {"content": content} if content else {}
+        resp = self._retry_request(
+            method, BASE_URL + path, data=data, files=files,
+        )
+        return resp.json()
 
     def _upload_multipart(
         self, method: str, path: str, payload: dict,
         image_bytes: bytes, filename: str,
     ) -> dict:
         """Send a multipart request with payload_json + file attachment."""
-        url = BASE_URL + path
         files = {
             "payload_json": (None, _json.dumps(payload), "application/json"),
             "files[0]": (filename, image_bytes, "image/png"),
         }
-        for attempt in range(3):
-            resp = self._session.request(
-                method, url, files=files, timeout=_HTTP_TIMEOUT,
-            )
-            if resp.status_code == 429:
-                retry_after = resp.json().get("retry_after", 1.0)
-                log.warning("Discord rate limited, retrying after %.1fs", retry_after)
-                time.sleep(retry_after)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        resp.raise_for_status()
-        return {}
+        resp = self._retry_request(method, BASE_URL + path, files=files)
+        return resp.json()
 
     def _request(self, method: str, path: str, **kwargs) -> dict | list | None:
-        url = BASE_URL + path
         headers = kwargs.pop("headers", {})
         headers["Content-Type"] = "application/json"
-        for attempt in range(3):
-            resp = self._session.request(
-                method, url, headers=headers, timeout=_HTTP_TIMEOUT, **kwargs,
-            )
-            if resp.status_code == 429:
-                retry_after = resp.json().get("retry_after", 1.0)
-                log.warning("Discord rate limited, retrying after %.1fs", retry_after)
-                time.sleep(retry_after)
-                continue
-            resp.raise_for_status()
-            if resp.status_code == 204:
-                return None
-            return resp.json()
-        resp.raise_for_status()
-        return None
+        resp = self._retry_request(
+            method, BASE_URL + path, headers=headers, **kwargs,
+        )
+        if resp.status_code == 204:
+            return None
+        return resp.json()

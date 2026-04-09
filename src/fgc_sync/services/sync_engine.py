@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fgc_sync.models import (
@@ -26,6 +25,31 @@ from fgc_sync.services.lua_parser import (
 )
 
 log = logging.getLogger(__name__)
+
+EXPIRED_EVENT_HOURS = 24  # delete Discord threads this long after event start
+DISCORD_LOOKAHEAD_DAYS = 7  # only post events within this window
+_SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
+
+
+def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
+    """Return True if another client has newer SavedVariables data on Discord."""
+    sv_path = config.saved_variables_path
+    local_sv_mtime = 0
+    if sv_path and sv_path.exists():
+        local_sv_mtime = int(sv_path.stat().st_mtime)
+    try:
+        remote_sv_mtime = discord.get_max_remote_sv_mtime()
+    except Exception as e:
+        log.warning("Discord: failed to read remote sv_mtime: %s", e)
+        remote_sv_mtime = 0
+    if local_sv_mtime and remote_sv_mtime and local_sv_mtime < remote_sv_mtime:
+        log.warning(
+            "Discord: local SavedVariables (%d) is older than "
+            "the most recent remote update (%d). Another client has newer data.",
+            local_sv_mtime, remote_sv_mtime,
+        )
+        return True
+    return False
 
 
 def compute_sync_plan(
@@ -222,11 +246,18 @@ def compute_discord_sync_plan(
     discord.clear_members_cache()
     discord.clear_thread_cache()
 
+    if _is_local_data_stale(config, discord):
+        plan.errors.append(
+            "Local SavedVariables is older than remote — "
+            "another client has newer data. Sync would be skipped."
+        )
+        return plan
+
     now = datetime.now(ZoneInfo(timezone))
 
     for event_id, evt in sorted(all_events.items(), key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute)):
         event_dt = _event_to_datetime(evt, timezone)
-        if (now - event_dt).total_seconds() / 3600 >= 24:
+        if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
             continue
 
         existing = mapping.get(event_id)
@@ -288,7 +319,7 @@ def compute_discord_sync_plan(
                 ))
 
     # Events in mapping but no longer in WoW or deleted
-    for event_id, info_map in mapping.items():
+    for event_id, _info_map in mapping.items():
         if event_id not in all_events or event_id in deleted_ids:
             plan.entries.append(SyncPlanEntry(
                 SyncAction.DELETE, event_id, event_id, "", "", "",
@@ -298,7 +329,7 @@ def compute_discord_sync_plan(
         evt = all_events.get(event_id)
         if evt:
             event_dt = _event_to_datetime(evt, timezone)
-            if (now - event_dt).total_seconds() / 3600 >= 24:
+            if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
                 plan.entries.append(SyncPlanEntry(
                     SyncAction.DELETE, event_id, evt.title, evt.date, evt.time_str,
                     evt.type_label, "expired",
@@ -330,22 +361,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     # Stale-data guard: if another client has already written newer
     # SavedVariables data to Discord, skip our entire Discord sync to avoid
     # flapping images and duplicate pings between clients.
+    if _is_local_data_stale(config, discord):
+        return result
+
     sv_path = config.saved_variables_path
     local_sv_mtime = 0
     if sv_path and sv_path.exists():
         local_sv_mtime = int(sv_path.stat().st_mtime)
-    try:
-        remote_sv_mtime = discord.get_max_remote_sv_mtime()
-    except Exception as e:
-        log.warning("Discord: failed to read remote sv_mtime: %s", e)
-        remote_sv_mtime = 0
-    if local_sv_mtime and remote_sv_mtime and local_sv_mtime < remote_sv_mtime:
-        log.warning(
-            "Discord: skipping sync — local SavedVariables (%d) is older than "
-            "the most recent remote update (%d). Another client has newer data.",
-            local_sv_mtime, remote_sv_mtime,
-        )
-        return result
 
     now = datetime.now(ZoneInfo(timezone))
 
@@ -353,7 +375,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         # Skip expired events — they are only in all_events so the
         # cleanup phase below can evaluate and delete their threads.
         event_dt = _event_to_datetime(evt, timezone)
-        if (now - event_dt).total_seconds() / 3600 >= 24:
+        if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
             continue
 
         existing = mapping.get(event_id)
@@ -442,7 +464,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 "pinged": sorted(pinged),
             }
             _evt_elapsed = _time.monotonic() - _evt_start
-            if _evt_elapsed > 5:
+            if _evt_elapsed > _SLOW_OPERATION_SECONDS:
                 log.warning("Discord: slow operation for %s: %.1fs", evt.title, _evt_elapsed)
 
         except Exception as e:
@@ -574,7 +596,7 @@ def _collect_all_future_events(
     # Include events from yesterday so the 24-hour cleanup logic can
     # evaluate them instead of deleting their channels immediately.
     earliest = today - timedelta(days=1)
-    cutoff = today + timedelta(days=7)
+    cutoff = today + timedelta(days=DISCORD_LOOKAHEAD_DAYS)
 
     result: dict[str, CalendarEvent] = {}
     for evt in wow_events:
