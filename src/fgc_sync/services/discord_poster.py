@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import date as _date
 
 import requests
 
@@ -21,17 +22,20 @@ BASE_URL = "https://discord.com/api/v10"
 
 _FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
 
+# German weekday abbreviations (Monday=0 … Sunday=6)
+_WEEKDAYS_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+
 # Short raid names for thread titles
 RAID_SHORT_NAMES: dict[str, str] = {
-    "karazhan": "kara",
-    "gruul": "gruul",
-    "magtheridon": "maggi",
-    "serpentshrine": "ssc",
-    "tempest_keep": "tk",
-    "hyjal": "hyjal",
-    "black_temple": "bt",
-    "sunwell": "swp",
-    "zulaman": "za",
+    "karazhan": "Kara",
+    "gruul": "Gruul",
+    "magtheridon": "Maggi",
+    "serpentshrine": "SSC",
+    "tempest_keep": "TK",
+    "hyjal": "Hyjal",
+    "black_temple": "BT",
+    "sunwell": "SWP",
+    "zulaman": "ZA",
 }
 
 
@@ -43,7 +47,8 @@ def _short_raid_name(raid: str) -> str:
     for key, short in RAID_SHORT_NAMES.items():
         if key in raid_lower:
             return short
-    return _slugify(raid, max_len=15) or "event"
+    # Fallback: titlecase the raw raid name
+    return raid.replace("_", " ").title()[:15] or "Event"
 
 
 def compute_event_hash(event: CalendarEvent) -> str:
@@ -97,11 +102,17 @@ class DiscordPoster:
 
     @staticmethod
     def _thread_name(event: CalendarEvent) -> str:
-        """Generate a forum thread name: 2026-04-08-2000-kara-forga."""
-        time_part = f"{event.server_hour:02d}{event.server_minute:02d}"
-        raid_part = _short_raid_name(event.raid) if event.raid else _slugify(event.title, max_len=20)
-        creator_part = _slugify(event.creator, max_len=20) if event.creator else "unknown"
-        return f"{event.date}-{time_part}-{raid_part}-{creator_part}"
+        """Generate a human-readable forum thread name.
+
+        Example: ``Do 10.04. 20:00 — Kara mit Forga``
+        """
+        dt = _date.fromisoformat(event.date)
+        weekday = _WEEKDAYS_DE[dt.weekday()]
+        date_part = f"{dt.day:02d}.{dt.month:02d}."
+        time_part = f"{event.server_hour:02d}:{event.server_minute:02d}"
+        raid_part = _short_raid_name(event.raid) if event.raid else event.title
+        creator = event.creator or "Unknown"
+        return f"{weekday} {date_part} {time_part} \u2014 {raid_part} mit {creator}"
 
     def create_event_thread(
         self, event: CalendarEvent, timezone: str, sv_mtime: int = 0,

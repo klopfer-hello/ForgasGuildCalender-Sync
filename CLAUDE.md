@@ -113,7 +113,7 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
 ### Discord Per-Event Forum Threads
 
 Each event with a confirmed roster gets its own thread in a Discord forum channel:
-- **Thread name**: `2026-04-03-2000-gruul-forga` (date, time without colon, short raid name, event creator)
+- **Thread name**: `Do 03.04. 20:00 — Gruul mit Forga` (German weekday, date, time, short raid name, creator)
 - **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (see `RAID_SHORT_NAMES` in `discord_poster.py`)
 - **Starter message**: roster image posted as part of thread creation (single API call)
 - **Visibility**: public to all server members
