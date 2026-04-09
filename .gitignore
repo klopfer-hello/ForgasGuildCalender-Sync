@@ -8,6 +8,8 @@ dist/
 build/
 *.egg-info/
 .ruff_cache/
+.pytest_cache/
+.coverage
 
 # Google OAuth credentials
 client_secrets.json
