@@ -134,7 +134,8 @@ class GoogleCalendarClient:
             # Search a 48h window to handle timezone offsets
             parts = date.split("-")
             y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-            from datetime import date as dt_date, timedelta
+            from datetime import date as dt_date
+            from datetime import timedelta
             next_day = dt_date(y, m, d) + timedelta(days=2)
             time_max = f"{next_day.isoformat()}T00:00:00+00:00"
 

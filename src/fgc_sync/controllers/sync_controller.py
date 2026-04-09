@@ -11,7 +11,11 @@ from fgc_sync.models import SyncPlan, SyncResult
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
-from fgc_sync.services.sync_engine import compute_sync_plan, execute_discord_sync, execute_sync
+from fgc_sync.services.sync_engine import (
+    compute_sync_plan,
+    execute_discord_sync,
+    execute_sync,
+)
 
 log = logging.getLogger(__name__)
 
@@ -107,11 +111,10 @@ class SyncController(QObject):
 
     def _force_reset(self):
         """Force-reset a stuck sync thread so the next sync can proceed."""
-        if self._thread is not None:
-            if not self._thread.wait(2000):  # 2s grace period
-                log.warning("Sync thread did not finish, terminating")
-                self._thread.terminate()
-                self._thread.wait(1000)
+        if self._thread is not None and not self._thread.wait(2000):  # 2s grace period
+            log.warning("Sync thread did not finish, terminating")
+            self._thread.terminate()
+            self._thread.wait(1000)
         self._thread = None
 
     def _on_finished(self, result: SyncResult):

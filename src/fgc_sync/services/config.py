@@ -76,7 +76,7 @@ class Config:
 
     def load(self):
         if self._path.exists():
-            with open(self._path, "r", encoding="utf-8") as f:
+            with open(self._path, encoding="utf-8") as f:
                 self._data = json.load(f)
         else:
             self._data = {}

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from fgc_sync._version import __version__, about_text
+from fgc_sync.models import SyncPlan
 from fgc_sync.services.config import (
     SAVED_VARIABLES_FILENAME,
     Config,
@@ -279,7 +280,7 @@ def main():
 
     # Dry-run mode: show what would happen without making any changes
     if args.dry_run:
-        plans: list[tuple[str, "SyncPlan"]] = []
+        plans: list[tuple[str, SyncPlan]] = []
 
         # Google Calendar plan
         if not args.discord_only and config.is_google_configured:
@@ -349,7 +350,7 @@ def main():
         if args.force:
             mapping = config.get("discord_message_mapping", {})
             log.info("Force resync: deleting %d tracked thread(s)", len(mapping))
-            for event_id, info in mapping.items():
+            for _event_id, info in mapping.items():
                 ch_id = info.get("channel_id")
                 if not ch_id:
                     continue
