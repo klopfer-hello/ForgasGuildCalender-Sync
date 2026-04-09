@@ -31,3 +31,14 @@ fgc-sync = "fgc_sync.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line length — handled by formatter if needed
+    "SIM108", # ternary — not always more readable
+]
