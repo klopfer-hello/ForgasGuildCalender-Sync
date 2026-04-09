@@ -95,7 +95,19 @@ Only posts events within the next 7 days that have a confirmed roster (group ass
 5. Events that happened 24+ hours ago → delete thread
 6. Persist `discord_message_mapping` to config
 
-**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Thread-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones.
+**Multi-client safety**: image filename encodes `roster_<event_id>_h<hash>_t<sv_mtime>.png`. Thread-name-based dedup avoids racing on creation; sv_mtime guard prevents older clients from overwriting newer ones. Ping dedup scans the thread's message history for bot messages (`get_already_pinged_names`) to avoid re-pinging members that another client already pinged.
+
+### Dry-Run Mode (`compute_discord_sync_plan`)
+
+`--dry-run` uses `compute_sync_plan` (Google Calendar) and `compute_discord_sync_plan` (Discord) to show what would happen without modifying any remote state or local config. The Discord plan queries existing threads and scans ping history read-only.
+
+### Setup Code
+
+`encode_setup_code` / `decode_setup_code` in `config.py` encode the Discord config (`discord_bot_token`, `discord_guild_id`, `discord_forum_id`) into a compact obfuscated string (JSON → zlib → base64url, prefixed `fgc1-`). Generated via `--export-code`, consumed during CLI or GUI setup.
+
+### Config Transactions
+
+`Config.begin_transaction()` / `commit_transaction()` / `rollback_transaction()` buffer writes during setup so that cancelling the wizard or CLI setup does not leave a partial `config.json` on disk.
 
 **Mapping schema** (`discord_message_mapping[event_id]`):
 - `channel_id`: Discord thread id (threads are channels in Discord's API)
@@ -150,7 +162,7 @@ The tray menu also has **"Open Log File"** which opens `%APPDATA%/ForgasGuildCal
 - Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
 - Runs a single sync cycle and exits — designed for cron
 - No Qt/PySide6 dependency required
-- Flags: `--discord-only`, `--version`, `--about`, `--check-update`, `--update`, `--config-dir`
+- Flags: `--dry-run`, `--discord-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
 - Interactive setup on first run using `questionary` (arrow-key select, tab path completion)
 - Handles git bash `/d/...` paths on Windows automatically
 - Checks for updates after every sync run (log message only)

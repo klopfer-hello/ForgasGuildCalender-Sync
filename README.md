@@ -55,6 +55,28 @@ Subsequent runs perform a single sync cycle and exit. Use `--discord-only` to sk
 fgc-sync-cli --discord-only
 ```
 
+Use `--dry-run` to preview what would happen without making any changes — shows planned actions for both Google Calendar and Discord:
+
+```bash
+fgc-sync-cli --dry-run
+```
+
+Example output:
+
+```
+Google Calendar: 1 to create, 0 to update, 0 to delete
+
+Action  Title                                  Date        Time   Info
+-----------------------------------------------------------------------
+create  [Raid] Gruul mit Forga (Klopfbernd)    2026-04-10  19:45  7 confirmed, 14 signed
+
+Discord: 0 to create, 1 to update, 0 to delete
+
+Action  Title               Date        Time   Info
+-----------------------------------------------------
+update  Karazhan mit Forga  2026-04-10  19:45  7 confirmed, 14 signed, ping 2 new
+```
+
 Use `--force` to delete every Discord thread tracked in the local mapping and recreate them from scratch (useful for recovering from inconsistent state):
 
 ```bash
@@ -96,6 +118,29 @@ Thread names follow the format: `Do 10.04. 20:00 — Kara mit Forga`
 }
 ```
 
+#### Sharing Discord config with your guild
+
+Once Discord is configured, you can generate a **setup code** that bundles the bot token, server ID, and forum channel ID into a single obfuscated string. Share this with guildmates so they can skip the manual Discord setup:
+
+```bash
+fgc-sync-cli --export-code
+```
+
+This prints a code like `fgc1-eNqrVkrJLE7OL0qJT8ov...` that recipients can paste during setup:
+
+- **GUI**: on the Discord wizard page, paste the code into the "Setup code" field and click **Import**
+- **CLI**: select "Paste a setup code" when prompted during setup
+
+<!-- screenshot:setup-code-import — Discord wizard page with setup code field -->
+
+#### Multi-client support
+
+Multiple guild members can run FGC Sync against the same Discord forum channel. The tool handles this safely:
+
+- **Thread dedup**: threads are matched by their deterministic name, so two clients won't create duplicates
+- **Ping dedup**: before pinging, the bot scans the thread's message history for its own prior ping messages — members already pinged (by any client) are skipped
+- **Stale-data guard**: each roster image filename encodes the SavedVariables file timestamp; a client with older data will skip posting to avoid overwriting newer updates
+
 ### Google Calendar
 
 Syncs raids where your character is signed up or confirmed to a personal Google Calendar. Events are created, updated, and deleted automatically.
@@ -117,6 +162,37 @@ Syncs raids where your character is signed up or confirmed to a personal Google 
 3. **Discord** (if configured): for events with a confirmed roster (group assignments) within 7 days — creates a forum thread with a roster image, pings confirmed members
 4. **Google Calendar** (if configured): for events where your character is signed up — creates/updates/deletes calendar entries
 5. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
+
+## CLI Reference
+
+```
+fgc-sync-cli [OPTIONS]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview what sync would do without making changes |
+| `--discord-only` | Only sync to Discord, skip Google Calendar |
+| `--force` | Delete all tracked Discord threads and recreate from scratch |
+| `--export-code` | Print a setup code encoding the Discord config for sharing |
+| `--setup` | Re-run the interactive setup wizard |
+| `--config-dir DIR` | Use a custom config directory |
+| `--check-update` | Check if a newer version is available |
+| `--update` | Download and install the latest version |
+| `--version` | Show version |
+| `--about` | Show version and license information |
+
+## Advanced Configuration
+
+The config file is stored at:
+- **Windows**: `%APPDATA%\ForgasGuildCalendar-Sync\config.json`
+- **Linux**: `~/.config/ForgasGuildCalendar-Sync/config.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `log_level` | `ERROR` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `timezone` | `Europe/Berlin` | IANA timezone for event times |
+| `default_duration_hours` | `3` | Default event duration in Google Calendar |
 
 ## License
 
