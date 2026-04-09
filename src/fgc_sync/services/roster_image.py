@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 from collections import defaultdict
-from pathlib import Path
+from importlib import resources
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -53,8 +53,8 @@ ROW_HEIGHT = 22 * SCALE
 GROUP_HEADER_HEIGHT = 26 * SCALE
 ICON_SIZE = 16 * SCALE
 
-# Class icon directory
-_ICONS_DIR = Path(__file__).parents[3] / "resources" / "class_icons"
+# Class icon package resource
+_CLASS_ICONS_PACKAGE = "fgc_sync.resources.class_icons"
 _icon_cache: dict[str, Image.Image] = {}
 _role_icon_cache: dict[str, Image.Image] = {}
 
@@ -92,15 +92,17 @@ def _get_class_icon(class_code: str) -> Image.Image | None:
     """Load and cache a class icon PNG."""
     if class_code in _icon_cache:
         return _icon_cache[class_code]
-    icon_path = _ICONS_DIR / f"{class_code}.png"
-    if icon_path.exists():
-        icon = Image.open(icon_path).convert("RGBA")
-        if icon.size != (ICON_SIZE, ICON_SIZE):
-            icon = icon.resize((ICON_SIZE, ICON_SIZE), Image.Resampling.LANCZOS)
-        _icon_cache[class_code] = icon
-        return icon
-    _icon_cache[class_code] = None
-    return None
+    try:
+        ref = resources.files(_CLASS_ICONS_PACKAGE).joinpath(f"{class_code}.png")
+        with resources.as_file(ref) as icon_path:
+            icon = Image.open(icon_path).convert("RGBA")
+            if icon.size != (ICON_SIZE, ICON_SIZE):
+                icon = icon.resize((ICON_SIZE, ICON_SIZE), Image.Resampling.LANCZOS)
+            _icon_cache[class_code] = icon
+            return icon
+    except (FileNotFoundError, ModuleNotFoundError, TypeError):
+        _icon_cache[class_code] = None
+        return None
 
 
 def _paste_icon(img: Image.Image, icon: Image.Image, x: int, y: int):
