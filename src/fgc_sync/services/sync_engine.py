@@ -424,8 +424,17 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     # Image up to date — fall through to ping retry below
                     pass
                 else:
-                    # Content changed — update image
-                    if msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids):
+                    # Content changed — update image in place, or find it
+                    # if the local mapping lost track of the message ID
+                    can_patch = msg_ids and msg_ids.get("image_id") and discord.message_exists(channel_id, msg_ids)
+                    if not can_patch:
+                        # Try to locate the original image before posting a duplicate
+                        found_id = discord.find_image_message(channel_id, evt.event_id)
+                        if found_id:
+                            msg_ids = msg_ids or {}
+                            msg_ids["image_id"] = found_id
+                            can_patch = True
+                    if can_patch:
                         msg_ids = discord.update_event(channel_id, msg_ids, evt, timezone, local_sv_mtime)
                     else:
                         msg_ids = discord.post_event(channel_id, evt, timezone, local_sv_mtime)

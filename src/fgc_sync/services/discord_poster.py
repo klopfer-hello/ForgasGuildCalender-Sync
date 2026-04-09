@@ -195,44 +195,45 @@ class DiscordPoster:
             if thread.get("name") == expected_name:
                 th_id = thread["id"]
                 log.info("Discord: matched existing thread by name for %s", event.title)
-                try:
-                    messages = self._request(
-                        "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
-                    )
-                    for msg in messages or []:
-                        for att in msg.get("attachments", []):
-                            m = _FILENAME_PATTERN.match(att.get("filename", ""))
-                            if m and m.group(1) == event_id:
-                                return {
-                                    "channel_id": th_id,
-                                    "image_id": msg["id"],
-                                    "hash": m.group(2),
-                                }
-                except requests.HTTPError:
-                    pass
+                found = self._find_image_in_thread(th_id, event_id)
+                if found:
+                    return {"channel_id": th_id, **found}
                 return {"channel_id": th_id, "image_id": None, "hash": None}
 
         # 2. Fall back to attachment scan (legacy threads with non-matching names)
         for thread in threads:
             th_id = thread["id"]
-            try:
-                messages = self._request(
-                    "GET", f"/channels/{th_id}/messages", params={"limit": _MESSAGE_SCAN_LIMIT},
-                )
-                if not messages:
-                    continue
-                for msg in messages:
-                    for att in msg.get("attachments", []):
-                        m = _FILENAME_PATTERN.match(att.get("filename", ""))
-                        if m and m.group(1) == event_id:
-                            return {
-                                "channel_id": th_id,
-                                "image_id": msg["id"],
-                                "hash": m.group(2),
-                            }
-            except requests.HTTPError:
-                continue
+            found = self._find_image_in_thread(th_id, event_id)
+            if found:
+                return {"channel_id": th_id, **found}
         return None
+
+    def _find_image_in_thread(self, thread_id: str, event_id: str) -> dict | None:
+        """Scan up to 100 messages in a thread for a roster image attachment.
+
+        Returns ``{"image_id": ..., "hash": ...}`` or ``None``.
+        """
+        try:
+            messages = self._request(
+                "GET", f"/channels/{thread_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+            for msg in messages or []:
+                for att in msg.get("attachments", []):
+                    m = _FILENAME_PATTERN.match(att.get("filename", ""))
+                    if m and m.group(1) == event_id:
+                        return {"image_id": msg["id"], "hash": m.group(2)}
+        except requests.HTTPError:
+            pass
+        return None
+
+    def find_image_message(self, channel_id: str, event_id: str) -> str | None:
+        """Find the message ID of the roster image in a thread.
+
+        Called by the sync engine before posting a duplicate image.
+        """
+        found = self._find_image_in_thread(channel_id, event_id)
+        return found["image_id"] if found else None
 
     def _get_forum_threads(self) -> list[dict]:
         """Get threads under the configured forum (cached per cycle)."""
