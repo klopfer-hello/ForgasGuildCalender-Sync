@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QMetaObject, Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from fgc_sync._version import APP_NAME, about_text
@@ -111,7 +111,14 @@ class AppController:
             return
         if self._watcher:
             self._watcher.stop()
-        self._watcher = FileWatcher(sv_dir, self._sync.request_sync)
+
+        def _on_file_changed():
+            # Marshal to Qt main thread — watchdog fires from a background thread
+            QMetaObject.invokeMethod(
+                self._sync, "request_sync", Qt.ConnectionType.QueuedConnection
+            )
+
+        self._watcher = FileWatcher(sv_dir, _on_file_changed)
         self._watcher.start()
 
     def _show_preview(self):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from fgc_sync.models import SyncPlan, SyncResult
 from fgc_sync.services.config import Config
@@ -92,6 +92,7 @@ class SyncController(QObject):
     def is_syncing(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
+    @Slot()
     def request_sync(self):
         """Start a background sync. Ignored if already syncing."""
         if self.is_syncing:
