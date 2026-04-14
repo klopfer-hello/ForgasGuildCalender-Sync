@@ -150,6 +150,19 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
 
     mapping: dict = config.get("event_mapping", {})
 
+    # Safety guard: if SavedVariables yielded no events but we have a non-empty
+    # mapping, treat this as a parser/structure mismatch and skip the sync
+    # entirely — otherwise cleanup would delete every mapped event.
+    if not syncable and mapping:
+        msg = (
+            f"Google sync: SavedVariables yielded no events but mapping has "
+            f"{len(mapping)} entries — skipping to avoid mass deletion "
+            "(possible SavedVariables structure change)."
+        )
+        log.warning(msg)
+        result.errors.append(msg)
+        return result
+
     for event_id, (evt, char_name) in syncable.items():
         start_dt = _event_to_datetime(evt, timezone)
         summary = evt.summary_line(char_name)
@@ -446,6 +459,19 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     discord.clear_members_cache()
     discord.clear_thread_cache()
 
+    # Safety guard: if SavedVariables yielded no events but we have a non-empty
+    # mapping, only run the 24h-expired cleanup and skip the "not in all_events"
+    # deletion — otherwise a parser/structure mismatch would wipe every thread.
+    no_events_guard = not all_events and bool(mapping)
+    if no_events_guard:
+        msg = (
+            f"Discord sync: SavedVariables yielded no events but mapping has "
+            f"{len(mapping)} entries — skipping create/update and non-expiry "
+            "deletions (possible SavedVariables structure change)."
+        )
+        log.warning(msg)
+        result.errors.append(msg)
+
     # Stale-data guard: if another client has already written newer
     # SavedVariables data to Discord, skip our entire Discord sync to avoid
     # flapping images and duplicate pings between clients.
@@ -459,9 +485,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     now = datetime.now(ZoneInfo(timezone))
 
-    for event_id, evt in sorted(
-        all_events.items(),
-        key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute),
+    for event_id, evt in (
+        []
+        if no_events_guard
+        else sorted(
+            all_events.items(),
+            key=lambda x: (x[1].date, x[1].server_hour, x[1].server_minute),
+        )
     ):
         # Skip expired events — they are only in all_events so the
         # cleanup phase below can evaluate and delete their threads.
@@ -583,9 +613,12 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             result.errors.append(f"Discord error for {evt.title}: {e}")
             log.error("Discord error for %s: %s", evt.title, e)
 
-    # Clean up: delete threads for events no longer active
+    # Clean up: delete threads for events no longer active.
+    # When the no-events guard is active, skip this phase — we can't tell
+    # "genuinely removed" from "parser couldn't see them" — and only let the
+    # 24h-expired cleanup below run (which is a no-op when all_events is empty).
     ids_to_remove = []
-    for event_id, info in mapping.items():
+    for event_id, info in [] if no_events_guard else list(mapping.items()):
         if event_id not in all_events or event_id in deleted_ids:
             not_in_events = event_id not in all_events
             in_deleted = event_id in deleted_ids
