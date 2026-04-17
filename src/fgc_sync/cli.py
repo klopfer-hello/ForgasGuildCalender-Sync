@@ -25,8 +25,10 @@ from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.sync_engine import (
     compute_discord_sync_plan,
     compute_sync_plan,
+    compute_weekly_sync_plan,
     execute_discord_sync,
     execute_sync,
+    execute_weekly_sync,
 )
 
 
@@ -209,6 +211,12 @@ def main():
         help="Only sync to Discord, skip Google Calendar",
     )
     parser.add_argument(
+        "--weekly-only",
+        action="store_true",
+        help="Only sync the weekly overview Discord thread and exit "
+        "(skip per-event threads and Google Calendar)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force Discord resync: delete all tracked channels and clear "
@@ -303,7 +311,11 @@ def main():
         plans: list[tuple[str, SyncPlan]] = []
 
         # Google Calendar plan
-        if not args.discord_only and config.is_google_configured:
+        if (
+            not args.discord_only
+            and not args.weekly_only
+            and config.is_google_configured
+        ):
             gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
             if not gcal.load_credentials():
                 gcal = None
@@ -318,7 +330,39 @@ def main():
         guild = config.get("discord_guild_id", "")
         if token and forum and guild:
             discord = DiscordPoster(token, forum, guild)
-            plans.append(("Discord", compute_discord_sync_plan(config, discord)))
+            if not args.weekly_only:
+                plans.append(("Discord", compute_discord_sync_plan(config, discord)))
+            plans.append(
+                ("Discord Weekly Overview", compute_weekly_sync_plan(config, discord))
+            )
+
+        # Render the weekly overview PNG to disk so you can preview it
+        # before any real sync touches Discord.
+        if args.weekly_only or not args.discord_only:
+            from fgc_sync.services.sync_engine import (
+                _collect_week_events_for_overview,
+            )
+            from fgc_sync.services.weekly_overview import (
+                current_week_bounds,
+                render_weekly_overview,
+            )
+
+            events, preview_errors = _collect_week_events_for_overview(config)
+            if preview_errors:
+                for err in preview_errors:
+                    print(f"Weekly preview error: {err}")
+            else:
+                monday, _sunday, _wk = current_week_bounds()
+                try:
+                    png = render_weekly_overview(events, monday)
+                    preview_path = config.app_data_dir / "weekly_preview.png"
+                    preview_path.write_bytes(png)
+                    print(
+                        f"Weekly overview preview written to: {preview_path} "
+                        f"({len(events)} raid(s), {len(png)} bytes)\n"
+                    )
+                except Exception as e:
+                    print(f"Weekly preview render failed: {e}\n")
 
         for label, plan in plans:
             for err in plan.errors:
@@ -352,7 +396,7 @@ def main():
         return
 
     # Google Calendar sync (optional)
-    if not args.discord_only and config.is_google_configured:
+    if not args.discord_only and not args.weekly_only and config.is_google_configured:
         gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
         if gcal.load_credentials():
             result = execute_sync(config, gcal)
@@ -371,7 +415,7 @@ def main():
     guild = config.get("discord_guild_id", "")
     if token and forum and guild:
         discord = DiscordPoster(token, forum, guild)
-        if args.force:
+        if args.force and not args.weekly_only:
             mapping = config.get("discord_message_mapping", {})
             log.info("Force resync: deleting %d tracked thread(s)", len(mapping))
             for _event_id, info in mapping.items():
@@ -383,12 +427,18 @@ def main():
                 except Exception as e:
                     log.error("Force resync: failed to delete thread %s: %s", ch_id, e)
             config.set("discord_message_mapping", {})
-        result = execute_discord_sync(config, discord)
-        log.info("Discord: %s", result)
-        if result.errors:
-            for err in result.errors:
+        if not args.weekly_only:
+            result = execute_discord_sync(config, discord)
+            log.info("Discord: %s", result)
+            if result.errors:
+                for err in result.errors:
+                    log.error("  %s", err)
+        weekly_result = execute_weekly_sync(config, discord)
+        log.info("Discord Weekly Overview: %s", weekly_result)
+        if weekly_result.errors:
+            for err in weekly_result.errors:
                 log.error("  %s", err)
-    elif args.discord_only:
+    elif args.discord_only or args.weekly_only:
         log.error(
             "Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config."
         )

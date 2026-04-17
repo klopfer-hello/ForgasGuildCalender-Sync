@@ -23,6 +23,14 @@ from fgc_sync.services.lua_parser import (
     list_character_names,
     parse_saved_variables,
 )
+from fgc_sync.services.weekly_overview import (
+    WEEKLY_THREAD_NAME,
+    collect_week_events,
+    compute_weekly_hash,
+    current_week_bounds,
+    format_weekly_summary,
+    render_weekly_overview,
+)
 
 log = logging.getLogger(__name__)
 
@@ -676,6 +684,177 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         result.created,
         result.updated,
         result.deleted,
+        result.skipped,
+    )
+    return result
+
+
+def _collect_week_events_for_overview(
+    config: Config,
+) -> tuple[list[CalendarEvent], list[str]]:
+    """Return (events_in_current_week, errors). No roster filter, no date-window filter."""
+    errors: list[str] = []
+    sv_path = config.saved_variables_path
+    if not sv_path or not sv_path.exists():
+        errors.append(f"SavedVariables not found: {sv_path}")
+        return [], errors
+
+    guild_key = config.get("guild_key")
+    if not guild_key:
+        errors.append("Guild key not configured")
+        return [], errors
+
+    try:
+        db = parse_saved_variables(sv_path)
+    except Exception as e:
+        errors.append(f"Failed to parse SavedVariables: {e}")
+        return [], errors
+
+    wow_events = extract_events(db, guild_key)
+    deleted_ids = get_deleted_event_ids(db, guild_key)
+    by_id = {e.event_id: e for e in wow_events if e.event_id not in deleted_ids}
+    return collect_week_events(by_id), errors
+
+
+def compute_weekly_sync_plan(
+    config: Config,
+    discord: DiscordPoster,
+) -> SyncPlan:
+    """Compute what the weekly-overview sync would do without touching Discord."""
+    plan = SyncPlan()
+    if not discord.is_configured:
+        return plan
+
+    events, errors = _collect_week_events_for_overview(config)
+    plan.errors.extend(errors)
+    if errors:
+        return plan
+
+    monday, sunday, week_key = current_week_bounds()
+    content_hash = compute_weekly_hash(events)
+    mapping: dict = config.get("discord_weekly_mapping", {}) or {}
+    info = (
+        f"{len(events)} raid(s), week {week_key} "
+        f"({monday.isoformat()}..{sunday.isoformat()})"
+    )
+
+    if not mapping.get("channel_id"):
+        plan.entries.append(
+            SyncPlanEntry(
+                SyncAction.CREATE,
+                "weekly_overview",
+                WEEKLY_THREAD_NAME,
+                monday.isoformat(),
+                "",
+                "Overview",
+                info,
+            )
+        )
+    elif mapping.get("hash") != content_hash or mapping.get("week_key") != week_key:
+        plan.entries.append(
+            SyncPlanEntry(
+                SyncAction.UPDATE,
+                "weekly_overview",
+                WEEKLY_THREAD_NAME,
+                monday.isoformat(),
+                "",
+                "Overview",
+                info,
+            )
+        )
+    return plan
+
+
+def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
+    """Create or update the single ``Wöchentliche Raid Übersicht`` thread."""
+    result = SyncResult()
+    if not discord.is_configured:
+        return result
+
+    events, errors = _collect_week_events_for_overview(config)
+    result.errors.extend(errors)
+    if errors:
+        return result
+
+    # Skip writing if another client already pushed newer SavedVariables data.
+    # Same guard used by per-event Discord sync.
+    if _is_local_data_stale(config, discord):
+        return result
+
+    monday, _sunday, week_key = current_week_bounds()
+    content_hash = compute_weekly_hash(events)
+    mapping: dict = config.get("discord_weekly_mapping", {}) or {}
+
+    sv_path = config.saved_variables_path
+    sv_mtime = int(sv_path.stat().st_mtime) if sv_path and sv_path.exists() else 0
+
+    filename = f"weekly_{week_key}_h{content_hash}_t{sv_mtime}.png"
+
+    try:
+        image_bytes = render_weekly_overview(events, monday)
+    except Exception as e:
+        result.errors.append(f"Weekly overview render failed: {e}")
+        log.error("Weekly overview render failed: %s", e)
+        return result
+
+    channel_id = mapping.get("channel_id")
+
+    # Adopt an existing thread if another client already created it
+    if not channel_id:
+        discord.clear_thread_cache()
+        try:
+            channel_id = discord.find_thread_by_name(WEEKLY_THREAD_NAME)
+        except Exception as e:
+            log.warning("Weekly overview: thread lookup failed: %s", e)
+            channel_id = None
+
+    summary = format_weekly_summary(monday, len(events))
+
+    try:
+        if not channel_id:
+            channel_id, message_id = discord.create_weekly_thread(
+                WEEKLY_THREAD_NAME, image_bytes, filename, summary
+            )
+            result.created += 1
+        else:
+            discord.ensure_unarchived(channel_id)
+            message_id = mapping.get("message_id")
+            same_week = mapping.get("week_key") == week_key
+            same_hash = mapping.get("hash") == content_hash
+
+            if message_id and same_week and same_hash:
+                result.skipped += 1
+            elif message_id and discord.message_exists(channel_id, message_id):
+                # Edit image + summary text in place
+                discord.update_weekly_image(
+                    channel_id, message_id, image_bytes, filename, summary
+                )
+                result.updated += 1
+            else:
+                # Either no known message or it was deleted — post a fresh one
+                message_id = discord.post_weekly_image(
+                    channel_id, image_bytes, filename
+                )
+                result.created += 1
+    except Exception as e:
+        result.errors.append(f"Weekly overview sync failed: {e}")
+        log.error("Weekly overview sync failed: %s", e)
+        return result
+
+    config.set(
+        "discord_weekly_mapping",
+        {
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "hash": content_hash,
+            "week_key": week_key,
+            "sv_mtime": sv_mtime,
+        },
+    )
+    log.debug(
+        "Weekly overview: %d created, %d updated, %d skipped",
+        result.created,
+        result.updated,
         result.skipped,
     )
     return result
