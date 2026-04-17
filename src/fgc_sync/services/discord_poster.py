@@ -284,6 +284,73 @@ class DiscordPoster:
         """Clear forum threads cache. Call once per sync cycle."""
         self._forum_threads_cache = None
 
+    def find_thread_by_name(self, name: str) -> str | None:
+        """Return the thread id of the first forum thread matching *name*."""
+        for thread in self._get_forum_threads():
+            if thread.get("name") == name:
+                return thread["id"]
+        return None
+
+    def create_weekly_thread(
+        self,
+        name: str,
+        image_bytes: bytes,
+        filename: str,
+        content: str = "",
+    ) -> tuple[str, str]:
+        """Create a forum thread with a starter image. Returns (thread_id, image_id)."""
+        payload = {
+            "name": name,
+            "message": {
+                "content": content,
+                "attachments": [{"id": 0, "filename": filename}],
+            },
+        }
+        data = self._upload_multipart(
+            "POST",
+            f"/channels/{self._forum_id}/threads",
+            payload,
+            image_bytes,
+            filename,
+        )
+        thread_id = data["id"]
+        message_id = data.get("message", {}).get("id")
+        log.info("Discord: created weekly thread %s (%s)", name, thread_id)
+        return thread_id, message_id
+
+    def post_weekly_image(
+        self,
+        channel_id: str,
+        image_bytes: bytes,
+        filename: str,
+    ) -> str:
+        """Post the weekly overview image in an existing thread. Returns message id."""
+        data = self._upload_image(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            image_bytes,
+            filename,
+            "",
+        )
+        return data["id"]
+
+    def update_weekly_image(
+        self,
+        channel_id: str,
+        message_id: str,
+        image_bytes: bytes,
+        filename: str,
+        content: str = "",
+    ):
+        """Patch the image and (optionally) content of an existing message."""
+        self._upload_image(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{message_id}",
+            image_bytes,
+            filename,
+            content,
+        )
+
     def get_max_remote_sv_mtime(self) -> int:
         """Scan the last few messages of every forum thread and return the
         highest SavedVariables mtime embedded in any roster image filename.
