@@ -40,6 +40,7 @@ src/fgc_sync/
 │   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
 │   ├── discord_poster.py    #   Discord REST API (forum threads + images + pings)
 │   ├── roster_image.py      #   Pillow-based roster card renderer
+│   ├── weekly_overview.py   #   Pillow-based week-timetable renderer + helpers
 │   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
 │   ├── sync_engine.py       #   Diff & sync (create/update/delete) + dry-run plans
 │   ├── file_watcher.py      #   Watchdog observer with debounce
@@ -166,19 +167,69 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 ---
 
+## Weekly Raid Overview
+
+### Sync Logic (`sync_engine.py` → `execute_weekly_sync`)
+
+Runs after per-event Discord sync. Maintains a **single permanent** forum thread named `Wöchentliche Raid Übersicht` (constant `WEEKLY_THREAD_NAME`) with a school-timetable-style image of the current ISO week.
+
+1. **Stale-data guard** (same `_is_local_data_stale` check as per-event sync): skip if another client has newer SavedVariables data on Discord
+2. Collect all guild events falling in the current ISO week (Mon–Sun) — no roster filter, no 7-day lookahead; `collect_week_events` in `weekly_overview.py`
+3. Compute `content_hash` over event_id + date + time + raid + creator + confirmed/signed counts
+4. If no thread yet in mapping → `find_thread_by_name` (adopt) or `create_weekly_thread` (post image + summary text)
+5. If thread exists and `{hash, week_key}` unchanged → skip
+6. Else → `update_weekly_image` (PATCH image + summary text in the same starter message)
+7. Persist `discord_weekly_mapping` to config
+
+### Image (`weekly_overview.py` → `render_weekly_overview`)
+
+- **Header**: `Raid Übersicht — KW <nn> / <year>`, full date range (`dd.mm.yyyy – dd.mm.yyyy`), raid count
+- **Grid**: 7 day columns (Mo–So) × hourly rows. Hour range is **dynamic** — `_determine_hour_range` picks `min(earliest_event, 17)` down to `max(latest_event_end, start+4)+1` (trailing labeled row for end clarity), capped at 03:00 next day
+- **Event cell**: short name, time range (`20:00–22:30`), `RL: <leader>`, `Bestätigt: X` (= confirmed), `Angemeldet: X+Y` (= confirmed + signed)
+- **Parallel raids**: greedy lane assignment per day column — overlapping raids sit side-by-side in equal-width lanes. Fonts shrink and labels abbreviate (`Best.`/`Angem.`) for 3+ lanes
+- Duration constant: `WEEKLY_EVENT_DURATION_HOURS` (fractional supported)
+
+### Starter Message Text
+
+`format_weekly_summary(monday, num_events)` returns:
+
+```
+**Raid Übersicht — KW <nn> / <year>**
+dd.mm.yyyy – dd.mm.yyyy
+N Raid(s) geplant
+```
+
+Sent as the starter message `content` on create, re-sent on every PATCH so it tracks the current week.
+
+### Mapping Schema (`discord_weekly_mapping`)
+
+Single dict (not keyed by event id):
+
+- `channel_id`: Discord thread ID (stable across weeks)
+- `message_id`: starter message ID (stable — the image is PATCHed in place)
+- `hash`: last rendered content hash
+- `week_key`: ISO week string like `2026-W16`
+- `sv_mtime`: SavedVariables mtime embedded in the image filename
+
+### Filename
+
+`weekly_<week_key>_h<hash>_t<sv_mtime>.png` — same `_h..._t...` convention as per-event roster images.
+
+---
+
 ## CLI
 
 - Entry point: `fgc-sync-cli` (or `python -m fgc_sync --headless`)
 - Runs a single sync cycle and exits — designed for cron
 - No Qt/PySide6 dependency
-- Flags: `--dry-run`, `--discord-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
+- Flags: `--dry-run`, `--discord-only`, `--weekly-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
 - Interactive setup on first run using `questionary`
 - Handles git bash `/d/...` paths on Windows (`_normalize_path`)
 - Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
 
 ### Dry-Run Mode
 
-`--dry-run` uses `compute_sync_plan` (Google) and `compute_discord_sync_plan` (Discord) to show planned actions without modifying any remote state or local config. Includes the stale-data guard check.
+`--dry-run` uses `compute_sync_plan` (Google), `compute_discord_sync_plan` (Discord per-event), and `compute_weekly_sync_plan` (Discord weekly overview) to show planned actions without modifying any remote state or local config. Also writes a local `weekly_preview.png` to the config dir so the weekly overview can be eyeballed before deployment. Includes the stale-data guard check.
 
 ### Setup Codes
 
@@ -224,6 +275,7 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 | `discord_guild_id` | Discord server ID (optional) |
 | `discord_forum_id` | Forum channel ID (optional) |
 | `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids, pinged[]}}` |
+| `discord_weekly_mapping` | `{channel_id, message_id, hash, week_key, sv_mtime}` — single entry for the permanent weekly-overview thread |
 
 ### Config Transactions
 
@@ -325,6 +377,14 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
 - Before posting a new image, always try `find_image_message` to locate the original
 - Deleting an already-deleted thread (404) must be handled silently
+
+### Weekly Overview
+
+- Thread name is constant (`WEEKLY_THREAD_NAME`) — don't change it per week; only the starter message content and image change
+- Both `execute_weekly_sync` and `compute_weekly_sync_plan` must respect the stale-data guard (`_is_local_data_stale`)
+- `compute_weekly_hash` must cover every field the image displays, so content changes always trigger a PATCH
+- `render_weekly_overview` must handle fractional `WEEKLY_EVENT_DURATION_HOURS` (e.g. 2.5) — coerce to int where values flow to canvas dimensions
+- Lane assignment uses event start/end in minutes; parallel raids in the same day column must never overlap visually
 
 ### UI
 

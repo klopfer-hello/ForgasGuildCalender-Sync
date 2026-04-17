@@ -151,6 +151,22 @@ Multiple guild members can run FGC Sync against the same Discord forum channel. 
 - **Ping dedup**: before pinging, the bot scans the thread's message history for its own prior ping messages — members already pinged (by any client) are skipped
 - **Stale-data guard**: each roster image filename encodes the SavedVariables file timestamp; a client with older data will skip posting to avoid overwriting newer updates
 
+#### Weekly raid overview
+
+Alongside the per-event threads, the bot maintains a single permanent forum thread called **`Wöchentliche Raid Übersicht`** that shows the current ISO week's schedule as a school-timetable-style image (7 day columns × hourly rows). Each raid cell lists short name, time range, raid leader, and counts (`Bestätigt` = confirmed, `Angemeldet` = confirmed + signed). Parallel raids on the same day sit side-by-side.
+
+The thread itself persists forever; every sync edits the starter message in place with a fresh image and a text summary like:
+
+```
+**Raid Übersicht — KW 16 / 2026**
+13.04.2026 – 19.04.2026
+3 Raid(s) geplant
+```
+
+Unlike per-event threads, the weekly overview **includes every planned raid in the week regardless of roster status** — not just those with a confirmed group assignment.
+
+Test before deploying: `fgc-sync-cli --weekly-only --dry-run` writes a `weekly_preview.png` to the config directory without touching Discord. `fgc-sync-cli --weekly-only` runs just the weekly sync (skipping per-event threads and Google Calendar).
+
 ### Google Calendar
 
 Syncs raids where your character is signed up or confirmed to a personal Google Calendar. Events are created, updated, and deleted automatically.
@@ -181,8 +197,9 @@ fgc-sync-cli [OPTIONS]
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Preview what sync would do without making changes |
+| `--dry-run` | Preview what sync would do without making changes (also writes `weekly_preview.png` to the config dir for local review) |
 | `--discord-only` | Only sync to Discord, skip Google Calendar |
+| `--weekly-only` | Only sync the weekly overview thread (skip per-event threads and Google Calendar) |
 | `--force` | Delete all tracked Discord threads and recreate from scratch |
 | `--export-code` | Print a setup code encoding the Discord config for sharing |
 | `--setup` | Re-run the interactive setup wizard |
