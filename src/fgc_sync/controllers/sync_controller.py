@@ -15,6 +15,7 @@ from fgc_sync.services.sync_engine import (
     compute_sync_plan,
     execute_discord_sync,
     execute_sync,
+    execute_weekly_sync,
 )
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,17 @@ class _SyncThread(QThread):
             except Exception as e:
                 result.errors.append(f"Discord sync failed: {e}")
                 log.error("Discord sync failed: %s", e)
+
+            try:
+                weekly_result = execute_weekly_sync(self._config, self._discord)
+                result.created += weekly_result.created
+                result.updated += weekly_result.updated
+                result.deleted += weekly_result.deleted
+                result.skipped += weekly_result.skipped
+                result.errors.extend(weekly_result.errors)
+            except Exception as e:
+                result.errors.append(f"Weekly overview sync failed: {e}")
+                log.error("Weekly overview sync failed: %s", e)
 
         self.sync_done.emit(result)
 
