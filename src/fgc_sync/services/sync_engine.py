@@ -24,11 +24,12 @@ from fgc_sync.services.lua_parser import (
     parse_saved_variables,
 )
 from fgc_sync.services.weekly_overview import (
-    WEEKLY_THREAD_NAME,
+    candidate_weekly_thread_names,
     collect_week_events,
     compute_weekly_hash,
     current_week_bounds,
     format_weekly_summary,
+    get_weekly_thread_name,
     render_weekly_overview,
 )
 
@@ -593,7 +594,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             to_ping = set(confirmed_names) - prev_pinged
             newly_pinged: set[str] = set()
             if to_ping:
-                label = "Confirmed" if is_new_thread else "Newly confirmed"
+                from fgc_sync.i18n import t as _t
+
+                label = (
+                    _t("discord.ping_confirmed")
+                    if is_new_thread
+                    else _t("discord.ping_newly_confirmed")
+                )
                 newly_pinged = discord.ping_members(channel_id, to_ping, label)
             pinged = prev_pinged | newly_pinged
 
@@ -738,12 +745,13 @@ def compute_weekly_sync_plan(
         f"({monday.isoformat()}..{sunday.isoformat()})"
     )
 
+    weekly_name = get_weekly_thread_name()
     if not mapping.get("channel_id"):
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.CREATE,
                 "weekly_overview",
-                WEEKLY_THREAD_NAME,
+                weekly_name,
                 monday.isoformat(),
                 "",
                 "Overview",
@@ -755,7 +763,7 @@ def compute_weekly_sync_plan(
             SyncPlanEntry(
                 SyncAction.UPDATE,
                 "weekly_overview",
-                WEEKLY_THREAD_NAME,
+                weekly_name,
                 monday.isoformat(),
                 "",
                 "Overview",
@@ -799,21 +807,28 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     channel_id = mapping.get("channel_id")
 
-    # Adopt an existing thread if another client already created it
+    # Adopt an existing thread if another client already created it.
+    # Try every supported language so a language switch doesn't recreate
+    # the thread (e.g. an old "Wöchentliche Raid Übersicht" thread is
+    # adopted after switching to English).
     if not channel_id:
         discord.clear_thread_cache()
         try:
-            channel_id = discord.find_thread_by_name(WEEKLY_THREAD_NAME)
+            for candidate in candidate_weekly_thread_names():
+                channel_id = discord.find_thread_by_name(candidate)
+                if channel_id:
+                    break
         except Exception as e:
             log.warning("Weekly overview: thread lookup failed: %s", e)
             channel_id = None
 
     summary = format_weekly_summary(monday, len(events))
+    weekly_name = get_weekly_thread_name()
 
     try:
         if not channel_id:
             channel_id, message_id = discord.create_weekly_thread(
-                WEEKLY_THREAD_NAME, image_bytes, filename, summary
+                weekly_name, image_bytes, filename, summary
             )
             result.created += 1
         else:

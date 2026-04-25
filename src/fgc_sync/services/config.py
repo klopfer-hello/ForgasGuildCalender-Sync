@@ -8,6 +8,9 @@ import os
 import zlib
 from pathlib import Path
 
+from fgc_sync import i18n
+from fgc_sync.services import config_migrations
+
 APP_NAME = "ForgasGuildCalendar-Sync"
 SAVED_VARIABLES_FILENAME = "ForgasGuildCalendar.lua"
 
@@ -67,6 +70,12 @@ class Config:
         self._data: dict = {}
         self._snapshot: dict | None = None
         self.load()
+        # Apply forward-only schema migrations on existing configs only —
+        # first-time installs have nothing to migrate; the setup wizard
+        # writes the canonical shape.
+        if self._path.exists() and config_migrations.apply_all(self._data):
+            self.save()
+        i18n.set_language(self.get("language"))
 
     @property
     def path(self) -> Path:
@@ -95,6 +104,8 @@ class Config:
 
     def set(self, key: str, value):
         self._data[key] = value
+        if key == "language":
+            i18n.set_language(value)
         self.save()
 
     def begin_transaction(self):

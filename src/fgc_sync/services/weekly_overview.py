@@ -8,6 +8,8 @@ from datetime import date, timedelta
 
 from PIL import Image, ImageDraw
 
+from fgc_sync import i18n
+from fgc_sync.i18n import t, tl
 from fgc_sync.models.events import CalendarEvent
 from fgc_sync.services.roster_image import (
     ACCENT_COLOR,
@@ -19,11 +21,22 @@ from fgc_sync.services.roster_image import (
     _load_font,
 )
 
-WEEKLY_THREAD_NAME = "Wöchentliche Raid Übersicht"
 WEEKLY_EVENT_DURATION_HOURS = 2.5
 
-# German weekday abbreviations (Monday=0)
-_WEEKDAYS_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+
+def get_weekly_thread_name() -> str:
+    """Active-language name for the permanent weekly-overview forum thread."""
+    return t("weekly.thread_name")
+
+
+def candidate_weekly_thread_names() -> list[str]:
+    """Every translation of the weekly-overview thread name (deduplicated).
+
+    Used for cross-language adoption of an existing thread when the user
+    switches the application language.
+    """
+    return i18n.t_all("weekly.thread_name")
+
 
 # Layout
 _SCALE = 2
@@ -54,10 +67,12 @@ def format_weekly_summary(monday: date, num_events: int) -> str:
         f"{monday.day:02d}.{monday.month:02d}.{monday.year} – "
         f"{sunday.day:02d}.{sunday.month:02d}.{sunday.year}"
     )
-    return (
-        f"**Raid Übersicht — KW {iso[1]:02d} / {iso[0]}**\n"
-        f"{date_range}\n"
-        f"{num_events} Raid(s) geplant"
+    return t(
+        "weekly.summary",
+        week=iso[1],
+        year=iso[0],
+        date_range=date_range,
+        count=num_events,
     )
 
 
@@ -177,7 +192,7 @@ def render_weekly_overview(
         fill=HEADER_BG,
     )
     iso = monday.isocalendar()
-    title = f"Raid Übersicht — KW {iso[1]:02d} / {iso[0]}"
+    title = t("weekly.image_title", week=iso[1], year=iso[0])
     draw.text((_PADDING, 10 * _SCALE), title, fill=ACCENT_COLOR, font=font_title)
 
     date_range = (
@@ -186,13 +201,14 @@ def render_weekly_overview(
     )
     draw.text((_PADDING, 40 * _SCALE), date_range, fill=TEXT_COLOR, font=font_header)
 
-    subtitle = f"{len(events)} Raid(s) geplant"
+    subtitle = t("weekly.image_subtitle", count=len(events))
     draw.text((_PADDING, 68 * _SCALE), subtitle, fill=SUBTEXT_COLOR, font=font_small)
 
     grid_origin_x = _PADDING
     grid_origin_y = _PADDING + _HEADER_HEIGHT
 
     # -- Day column headers --
+    weekdays = tl("discord.weekday_abbrev")
     for col in range(7):
         day = monday + timedelta(days=col)
         x = grid_origin_x + _TIME_COL_WIDTH + col * _DAY_COL_WIDTH
@@ -204,7 +220,7 @@ def render_weekly_overview(
             fill=HEADER_BG,
             outline=BORDER_COLOR,
         )
-        weekday = _WEEKDAYS_DE[col]
+        weekday = weekdays[col] if len(weekdays) == 7 else day.strftime("%a")
         date_str = f"{day.day:02d}.{day.month:02d}."
         draw.text(
             (x + 10 * _SCALE, grid_origin_y + 6 * _SCALE),
@@ -322,24 +338,24 @@ def render_weekly_overview(
             title_h = 14 * _SCALE
             line_h = 12 * _SCALE
             leader_max = 8
-            label_confirmed = "Best."
-            label_signed = "Angem."
+            label_confirmed = t("weekly.label_confirmed_short")
+            label_signed = t("weekly.label_signed_short")
         elif lanes == 2:
             cell_title = _load_font(11 * _SCALE, bold=True)
             cell_text = _load_font(9 * _SCALE)
             title_h = 16 * _SCALE
             line_h = 13 * _SCALE
             leader_max = 12
-            label_confirmed = "Bestätigt"
-            label_signed = "Angemeldet"
+            label_confirmed = t("weekly.label_confirmed")
+            label_signed = t("weekly.label_signed")
         else:
             cell_title = font_body_bold
             cell_text = font_small
             title_h = 18 * _SCALE
             line_h = 16 * _SCALE
             leader_max = 18
-            label_confirmed = "Bestätigt"
-            label_signed = "Angemeldet"
+            label_confirmed = t("weekly.label_confirmed")
+            label_signed = t("weekly.label_signed")
 
         short_name = _short_raid_name(evt.raid, evt.title)
         end_h, end_m = _end_time(evt)

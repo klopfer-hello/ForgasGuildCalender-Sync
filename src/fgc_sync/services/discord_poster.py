@@ -12,6 +12,8 @@ from datetime import date as _date
 
 import requests
 
+from fgc_sync import i18n
+from fgc_sync.i18n import t, tl_for
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent
 from fgc_sync.services.roster_image import render_roster
@@ -21,9 +23,6 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://discord.com/api/v10"
 
 _FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
-
-# German weekday abbreviations (Monday=0 … Sunday=6)
-_WEEKDAYS_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 
 # Short raid names for thread titles
 RAID_SHORT_NAMES: dict[str, str] = {
@@ -106,18 +105,40 @@ class DiscordPoster:
     # -- Thread management --
 
     @staticmethod
-    def _thread_name(event: CalendarEvent) -> str:
-        """Generate a human-readable forum thread name.
+    def _format_thread_name(event: CalendarEvent, language: str) -> str:
+        """Generate a forum thread name in *language*.
 
         Example: ``Do 10.04. 20:00 — Kara mit Forga``
         """
         dt = _date.fromisoformat(event.date)
-        weekday = _WEEKDAYS_DE[dt.weekday()]
+        weekdays = tl_for(language, "discord.weekday_abbrev")
+        weekday = weekdays[dt.weekday()] if len(weekdays) == 7 else dt.strftime("%a")
         date_part = f"{dt.day:02d}.{dt.month:02d}."
         time_part = f"{event.server_hour:02d}:{event.server_minute:02d}"
         raid_part = _short_raid_name(event.raid) if event.raid else event.title
         creator = event.creator or "Unknown"
-        return f"{weekday} {date_part} {time_part} \u2014 {raid_part} mit {creator}"
+        with_word = i18n.t_for(language, "discord.thread_with_word")
+        return f"{weekday} {date_part} {time_part} \u2014 {raid_part} {with_word} {creator}"
+
+    @staticmethod
+    def _thread_name(event: CalendarEvent) -> str:
+        """Generate the thread name in the currently active language."""
+        return DiscordPoster._format_thread_name(event, i18n.get_language())
+
+    @staticmethod
+    def _candidate_thread_names(event: CalendarEvent) -> list[str]:
+        """All thread-name variants the event might have under any supported
+        language. Used so existing threads remain discoverable after a
+        language switch.
+        """
+        seen: set[str] = set()
+        out: list[str] = []
+        for code in (i18n.get_language(), *i18n.available_languages()):
+            name = DiscordPoster._format_thread_name(event, code)
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out
 
     def create_event_thread(
         self,
@@ -197,18 +218,19 @@ class DiscordPoster:
     def find_existing_thread(self, event: CalendarEvent) -> dict | None:
         """Search forum threads for one that belongs to this event.
 
-        Matches first by deterministic thread name (avoids races where another
-        client just created the thread but has not uploaded the image yet),
-        then falls back to scanning recent messages for a matching roster image.
+        Matches first by deterministic thread name in the active language,
+        then by names in any other supported language (so threads created
+        under a different language are still discoverable), and finally
+        falls back to scanning recent messages for a matching roster image.
         """
         event_id = event.event_id
-        expected_name = self._thread_name(event)
+        candidate_names = set(self._candidate_thread_names(event))
         threads = self._get_forum_threads()
         log.debug("Scanning %d forum threads for event %s", len(threads), event_id)
 
-        # 1. Match by deterministic thread name
+        # 1. Match by deterministic thread name (any language)
         for thread in threads:
-            if thread.get("name") == expected_name:
+            if thread.get("name") in candidate_names:
                 th_id = thread["id"]
                 log.info("Discord: matched existing thread by name for %s", event.title)
                 found = self._find_image_in_thread(th_id, event_id)
@@ -441,15 +463,18 @@ class DiscordPoster:
         self,
         channel_id: str,
         names: set[str],
-        label: str = "Confirmed",
+        label: str | None = None,
     ) -> set[str]:
         """Post a one-off ping message for the given character names.
 
-        Returns the subset of names that resolved to a Discord member and
-        were actually mentioned. Names that did not resolve are not returned,
-        so the caller can retry them on a later sync (e.g. when the user
-        finally joins the Discord server).
+        If *label* is None, the active-language ``ping_confirmed`` label is
+        used. Returns the subset of names that resolved to a Discord member
+        and were actually mentioned. Names that did not resolve are not
+        returned, so the caller can retry them on a later sync (e.g. when
+        the user finally joins the Discord server).
         """
+        if label is None:
+            label = t("discord.ping_confirmed")
         mentions = []
         resolved: set[str] = set()
         for name in sorted(names):
@@ -492,15 +517,23 @@ class DiscordPoster:
         except requests.HTTPError:
             return set()
 
+        # Collect every label prefix this bot might use, across all
+        # supported languages — so language switches don't cause re-pings.
+        ping_prefixes: tuple[str, ...] = tuple(
+            f"{label}:"
+            for label in (
+                *i18n.t_all("discord.ping_confirmed"),
+                *i18n.t_all("discord.ping_newly_confirmed"),
+            )
+        )
+
         # Collect all user IDs the bot has already pinged
         pinged_user_ids: set[str] = set()
         for msg in messages or []:
             if msg.get("author", {}).get("id") != bot_id:
                 continue
             content = msg.get("content", "")
-            if content.startswith("Confirmed:") or content.startswith(
-                "Newly confirmed:"
-            ):
+            if any(content.startswith(p) for p in ping_prefixes):
                 pinged_user_ids.update(re.findall(r"<@(\d+)>", content))
 
         if not pinged_user_ids:

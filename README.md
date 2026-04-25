@@ -21,6 +21,8 @@ Both features are optional — configure only what you need.
 
 Runs as a **Windows system tray app** (auto-sync on file changes + 5-minute polling) or as a **headless CLI** for Linux/cron.
 
+**Languages supported:** English (`en-UK`), Deutsch (`de-DE`). The first prompt of the setup wizard (CLI and GUI) lets you pick — you can change it later in Settings.
+
 ## Installation
 
 ### Windows — Standalone executable (recommended)
@@ -107,7 +109,7 @@ Sync every 5 minutes:
 
 Creates a forum thread per raid, posts a rendered roster image as the starter message, and pings confirmed members. Threads are automatically deleted 24 hours after the raid.
 
-Thread names follow the format: `Do 10.04. 20:00 — Kara mit Forga`
+Thread names follow the format: `Do 10.04. 20:00 — Kara mit Forga` (de-DE) or `Thu 10.04. 20:00 — Kara with Forga` (en-UK). Threads created under one language remain discoverable after switching to the other — no orphaned duplicates.
 
 **Setup:**
 
@@ -153,7 +155,7 @@ Multiple guild members can run FGC Sync against the same Discord forum channel. 
 
 #### Weekly raid overview
 
-Alongside the per-event threads, the bot maintains a single permanent forum thread called **`Wöchentliche Raid Übersicht`** that shows the current ISO week's schedule as a school-timetable-style image (7 day columns × hourly rows). Each raid cell lists short name, time range, raid leader, and counts (`Bestätigt` = confirmed, `Angemeldet` = confirmed + signed). Parallel raids on the same day sit side-by-side.
+Alongside the per-event threads, the bot maintains a single permanent forum thread (`Wöchentliche Raid Übersicht` in de-DE, `Weekly Raid Overview` in en-UK) that shows the current ISO week's schedule as a school-timetable-style image (7 day columns × hourly rows). Each raid cell lists short name, time range, raid leader, and counts (`Bestätigt`/`Confirmed` and `Angemeldet`/`Signed` = confirmed + signed). Parallel raids on the same day sit side-by-side.
 
 The thread itself persists forever; every sync edits the starter message in place with a fresh image and a text summary like:
 
@@ -217,6 +219,7 @@ The config file is stored at:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `language` | `en-UK` | UI / output language. Currently shipped: `en-UK`, `de-DE`. Drop a new `<code>.json` into `src/fgc_sync/i18n/` to add a language — see [CLAUDE.md](CLAUDE.md#internationalization-i18n) |
 | `log_level` | `ERROR` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `timezone` | `Europe/Berlin` | IANA timezone for event times |
 | `default_duration_hours` | `3` | Default event duration in Google Calendar |
@@ -264,6 +267,32 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/):
 ```bash
 pytest tests/ -v
 ```
+
+### Adding a translation
+
+Translation files live in [`src/fgc_sync/i18n/`](src/fgc_sync/i18n/) as `<code>.json` (one file per language, e.g. `en-UK.json`, `de-DE.json`). The application discovers them at startup — drop a new file in and it appears in the language picker on next launch. No code changes required.
+
+To contribute a new language:
+
+1. Copy `en-UK.json` (the reference language — source of truth for which keys exist) to `<your-code>.json`. Use a [BCP-47 tag](https://en.wikipedia.org/wiki/IETF_language_tag) like `fr-FR`, `pl-PL`, or `pt-BR`
+2. Update the `_meta` block at the top — `display_name` is what the language picker shows:
+   ```json
+   {
+     "_meta": { "display_name": "Français", "native_name": "Français" },
+     ...
+   }
+   ```
+3. Translate every string value. Keep `{placeholder}` tokens intact and in the same order they appear in the source — they're filled with `str.format()` at runtime
+4. Don't translate raid short names (`Kara`, `SSC`, etc.) — those are WoW jargon that stays consistent across languages
+5. Run `pytest tests/test_i18n.py` to verify your file has every reference key
+6. Commit with `feat(i18n): add <Language> translation`
+
+Notes:
+- Missing keys log a warning and fall through to the English value, so a partial translation still works
+- Discord thread names use the `discord.weekday_abbrev` array and the `discord.thread_with_word` value (e.g. `mit` / `with`) — pick concise forms (≤ 3 chars for weekdays) to keep thread titles short
+- Date format stays `dd.mm.yyyy` regardless of language (matches the WoW addon convention)
+
+See [CLAUDE.md → Internationalization](CLAUDE.md#internationalization-i18n) for the full key reference and the cross-language dedup rules.
 
 ### Architecture
 

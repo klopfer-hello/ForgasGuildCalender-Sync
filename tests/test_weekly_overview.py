@@ -2,15 +2,36 @@
 
 from datetime import date
 
+import pytest
+
+from fgc_sync import i18n
 from fgc_sync.models.enums import Attendance, EventType
 from fgc_sync.models.events import CalendarEvent, Participant
 from fgc_sync.services.weekly_overview import (
+    candidate_weekly_thread_names,
     collect_week_events,
     compute_weekly_hash,
     current_week_bounds,
     format_weekly_summary,
+    get_weekly_thread_name,
     render_weekly_overview,
 )
+
+
+@pytest.fixture
+def lang_de():
+    previous = i18n.get_language()
+    i18n.set_language("de-DE")
+    yield
+    i18n.set_language(previous)
+
+
+@pytest.fixture
+def lang_en():
+    previous = i18n.get_language()
+    i18n.set_language("en-UK")
+    yield
+    i18n.set_language(previous)
 
 
 def _evt(
@@ -46,7 +67,7 @@ def _evt(
 
 
 class TestFormatWeeklySummary:
-    def test_contains_week_number_and_dates(self):
+    def test_contains_week_number_and_dates_de(self, lang_de):
         monday = date(2026, 4, 13)
         text = format_weekly_summary(monday, 3)
         assert "KW 16" in text
@@ -54,6 +75,30 @@ class TestFormatWeeklySummary:
         assert "13.04.2026" in text
         assert "19.04.2026" in text
         assert "3 Raid(s)" in text
+        assert "geplant" in text
+
+    def test_contains_week_number_and_dates_en(self, lang_en):
+        monday = date(2026, 4, 13)
+        text = format_weekly_summary(monday, 3)
+        assert "CW 16" in text
+        assert "2026" in text
+        assert "13.04.2026" in text
+        assert "19.04.2026" in text
+        assert "3 raid(s)" in text
+        assert "scheduled" in text
+
+
+class TestWeeklyThreadName:
+    def test_active_language_de(self, lang_de):
+        assert get_weekly_thread_name() == "Wöchentliche Raid Übersicht"
+
+    def test_active_language_en(self, lang_en):
+        assert get_weekly_thread_name() == "Weekly Raid Overview"
+
+    def test_candidates_cover_all_languages(self):
+        names = candidate_weekly_thread_names()
+        assert "Wöchentliche Raid Übersicht" in names
+        assert "Weekly Raid Overview" in names
 
 
 class TestCurrentWeekBounds:

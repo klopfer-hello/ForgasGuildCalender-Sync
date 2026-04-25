@@ -12,7 +12,9 @@ import os
 import sys
 from pathlib import Path
 
+from fgc_sync import i18n
 from fgc_sync._version import __version__, about_text
+from fgc_sync.i18n import t
 from fgc_sync.models import SyncPlan
 from fgc_sync.services.config import (
     SAVED_VARIABLES_FILENAME,
@@ -47,9 +49,28 @@ def _run_cli_setup(config: Config) -> bool:
 
     from fgc_sync.services.lua_parser import list_guild_keys, parse_saved_variables
 
+    # 0. Language — must run first so subsequent prompts use the chosen language
+    language_choices = [
+        questionary.Choice(i18n.display_name(code), value=code)
+        for code in i18n.available_languages()
+    ]
+    current_language = i18n.get_language()
+    default_choice = next(
+        (c for c in language_choices if c.value == current_language),
+        language_choices[0],
+    )
+    language = questionary.select(
+        t("cli.setup.language_prompt"),
+        choices=language_choices,
+        default=default_choice,
+    ).ask()
+    if language is None:
+        return False
+    config.set("language", language)
+
     # 1. WoW path
     wow_input = questionary.path(
-        "WoW installation directory:",
+        t("cli.setup.wow_dir_prompt"),
         default=config.get("wow_path", ""),
         only_directories=True,
     ).ask()
@@ -58,7 +79,7 @@ def _run_cli_setup(config: Config) -> bool:
     wow_path = Path(_normalize_path(wow_input))
     wtf = wow_path / "WTF" / "Account"
     if not wtf.is_dir():
-        print(f"Error: {wtf} not found. Is this the correct WoW directory?")
+        print(t("cli.setup.wow_not_found", wtf=wtf))
         return False
 
     # 2. Account folder (arrow-key select)
@@ -68,10 +89,10 @@ def _run_cli_setup(config: Config) -> bool:
         if d.is_dir() and d.name != "SavedVariables"
     ]
     if not accounts:
-        print("Error: No account folders found.")
+        print(t("cli.setup.no_accounts"))
         return False
     account = questionary.select(
-        "Select account:",
+        t("cli.setup.select_account"),
         choices=accounts,
     ).ask()
     if account is None:
@@ -80,19 +101,19 @@ def _run_cli_setup(config: Config) -> bool:
     # 3. Guild key (arrow-key select)
     sv_file = wtf / account / "SavedVariables" / SAVED_VARIABLES_FILENAME
     if not sv_file.exists():
-        print(f"Error: SavedVariables not found at {sv_file}")
+        print(t("cli.setup.sv_not_found", path=sv_file))
         return False
     try:
         db = parse_saved_variables(sv_file)
         guilds = list_guild_keys(db)
     except Exception as e:
-        print(f"Error parsing SavedVariables: {e}")
+        print(t("cli.setup.sv_parse_error", error=e))
         return False
     if not guilds:
-        print("Error: No guilds found in SavedVariables.")
+        print(t("cli.setup.no_guilds"))
         return False
     guild = questionary.select(
-        "Select guild:",
+        t("cli.setup.select_guild"),
         choices=guilds,
     ).ask()
     if guild is None:
@@ -104,50 +125,55 @@ def _run_cli_setup(config: Config) -> bool:
 
     # 4. Discord (optional) — setup code or manual
     discord_choice = questionary.select(
-        "Discord bot integration:",
+        t("cli.setup.discord_prompt"),
         choices=[
-            questionary.Choice("Paste a setup code", value="code"),
-            questionary.Choice("Enter credentials manually", value="manual"),
-            questionary.Choice("Skip", value="skip"),
+            questionary.Choice(t("cli.setup.discord_choice_code"), value="code"),
+            questionary.Choice(t("cli.setup.discord_choice_manual"), value="manual"),
+            questionary.Choice(t("cli.setup.discord_choice_skip"), value="skip"),
         ],
     ).ask()
     if discord_choice == "code":
-        code = questionary.text("Setup code:").ask()
+        code = questionary.text(t("cli.setup.setup_code_prompt")).ask()
         if code:
             values = decode_setup_code(code)
             if values:
                 for k, v in values.items():
                     config.set(k, v)
-                print("Discord configured from setup code.")
+                print(t("cli.setup.discord_configured_code"))
             else:
-                print("Invalid setup code. Skipping Discord.")
+                print(t("cli.setup.discord_invalid_code"))
         else:
-            print("Skipped — no code entered.")
+            print(t("cli.setup.discord_no_code"))
     elif discord_choice == "manual":
-        token = questionary.password("Bot token:").ask()
-        guild_id = questionary.text("Server (Guild) ID:").ask()
-        forum_id = questionary.text("Forum Channel ID for raid threads:").ask()
+        token = questionary.password(t("cli.setup.bot_token_prompt")).ask()
+        guild_id = questionary.text(t("cli.setup.guild_id_prompt")).ask()
+        forum_id = questionary.text(t("cli.setup.forum_id_prompt")).ask()
         if token and guild_id and forum_id:
             config.set("discord_bot_token", token)
             config.set("discord_guild_id", guild_id)
             config.set("discord_forum_id", forum_id)
-            print("Discord configured.")
+            print(t("cli.setup.discord_configured_manual"))
         else:
-            print("Skipped — not all fields provided.")
+            print(t("cli.setup.discord_partial_skip"))
 
     # 5. Google Calendar (optional)
     if questionary.confirm(
-        "Set up Google Calendar sync?",
+        t("cli.setup.google_prompt"),
         default=False,
     ).ask():
         from fgc_sync.services.google_calendar import GoogleCalendarClient
 
         gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
         if not config.client_secrets_path.exists():
-            print(f"Place client_secrets.json at: {config.client_secrets_path}")
-            print("Skipping Google Calendar — credentials file not found.")
+            print(
+                t(
+                    "cli.setup.google_secrets_missing_path",
+                    path=config.client_secrets_path,
+                )
+            )
+            print(t("cli.setup.google_skip_no_secrets"))
         else:
-            print("Opening browser for Google login...")
+            print(t("cli.setup.google_opening_browser"))
             try:
                 if gcal.authenticate():
                     calendars = gcal.list_calendars()
@@ -155,26 +181,31 @@ def _run_cli_setup(config: Config) -> bool:
                     for cal in calendars:
                         label = cal["summary"]
                         if cal.get("primary"):
-                            label += " (primary)"
+                            label += t("cli.setup.calendar_primary_suffix")
                         choices.append(questionary.Choice(label, value=cal["id"]))
                     cal_id = questionary.select(
-                        "Select calendar:",
+                        t("cli.setup.select_calendar"),
                         choices=choices,
                     ).ask()
                     if cal_id:
                         config.set("calendar_id", cal_id)
-                        print("Google Calendar configured.")
+                        print(t("cli.setup.google_configured"))
                 else:
-                    print("Google login failed.")
+                    print(t("cli.setup.google_login_failed"))
             except Exception as e:
-                print(f"Google login error: {e}")
+                print(t("cli.setup.google_login_error", error=e))
 
-    print(f"\nSetup complete! Config saved to {config.path}")
+    print(t("cli.setup.complete", path=config.path))
     return True
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FGC Sync — headless CLI")
+    # Load default config first so i18n.set_language() runs before we build
+    # argparse — that way --help is shown in the user's configured language.
+    # If --config-dir is supplied, we'll swap to that config after parsing.
+    default_config = Config()
+
+    parser = argparse.ArgumentParser(description=t("cli.description"))
     parser.add_argument(
         "--version",
         action="version",
@@ -183,57 +214,53 @@ def main():
     parser.add_argument(
         "--about",
         action="store_true",
-        help="Show version and license information",
+        help=t("cli.flags.about"),
     )
     parser.add_argument(
         "--check-update",
         action="store_true",
-        help="Check if a newer version is available",
+        help=t("cli.flags.check_update"),
     )
     parser.add_argument(
         "--update",
         action="store_true",
-        help="Download and install the latest version",
+        help=t("cli.flags.update"),
     )
     parser.add_argument(
         "--setup",
         action="store_true",
-        help="Re-run the interactive setup (reconfigure WoW, Discord, Google)",
+        help=t("cli.flags.setup"),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what sync would do without making any changes",
+        help=t("cli.flags.dry_run"),
     )
     parser.add_argument(
         "--discord-only",
         action="store_true",
-        help="Only sync to Discord, skip Google Calendar",
+        help=t("cli.flags.discord_only"),
     )
     parser.add_argument(
         "--weekly-only",
         action="store_true",
-        help="Only sync the weekly overview Discord thread and exit "
-        "(skip per-event threads and Google Calendar)",
+        help=t("cli.flags.weekly_only"),
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force Discord resync: delete all tracked channels and clear "
-        "the mapping before syncing, so every channel is recreated and "
-        "every confirmed member is re-pinged",
+        help=t("cli.flags.force"),
     )
     parser.add_argument(
         "--export-code",
         action="store_true",
-        help="Print a setup code that encodes the Discord bot config "
-        "(token, server ID, forum ID) for sharing with other users",
+        help=t("cli.flags.export_code"),
     )
     parser.add_argument(
         "--config-dir",
         type=str,
         default=None,
-        help="Use a custom config directory (for testing or multi-user setups)",
+        help=t("cli.flags.config_dir"),
     )
     args = parser.parse_args()
 
@@ -246,12 +273,18 @@ def main():
 
         info = check_for_update()
         if info is None:
-            print("Could not check for updates.")
+            print(t("cli.update.could_not_check"))
             sys.exit(1)
         if not info.is_newer:
-            print(f"Already up to date (v{info.current_version}).")
+            print(t("cli.update.up_to_date", version=info.current_version))
             return
-        print(f"Update available: v{info.current_version} -> v{info.latest_version}")
+        print(
+            t(
+                "cli.update.available",
+                current=info.current_version,
+                latest=info.latest_version,
+            )
+        )
         if args.update:
             result = perform_update(info)
             print(result)
@@ -264,21 +297,17 @@ def main():
         config_dir.mkdir(parents=True, exist_ok=True)
         config = Config(config_dir / "config.json")
     else:
-        config = Config()
+        config = default_config
 
     if args.export_code:
         token = config.get("discord_bot_token", "")
         guild_id = config.get("discord_guild_id", "")
         forum_id = config.get("discord_forum_id", "")
         if not (token and guild_id and forum_id):
-            print(
-                "Error: Discord is not fully configured. "
-                "Set up discord_bot_token, discord_guild_id, and "
-                "discord_forum_id first."
-            )
+            print(t("cli.export_code.incomplete"))
             sys.exit(1)
         code = encode_setup_code(config._data)
-        print("Share this setup code with other users:\n")
+        print(t("cli.export_code.share_intro"))
         print(code)
         return
 
@@ -297,13 +326,13 @@ def main():
     log = logging.getLogger(__name__)
 
     if args.setup or not config.is_setup_complete:
-        print("Starting interactive setup...\n")
+        print(t("cli.setup.starting") + "\n")
         config.begin_transaction()
         if _run_cli_setup(config):
             config.commit_transaction()
         else:
             config.rollback_transaction()
-            print("Setup cancelled.")
+            print(t("cli.setup.cancelled"))
             sys.exit(1)
 
     # Dry-run mode: show what would happen without making any changes
@@ -319,10 +348,10 @@ def main():
             gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
             if not gcal.load_credentials():
                 gcal = None
-                print("Google credentials not available — plan may be incomplete.\n")
+                print(t("cli.dry_run.google_creds_unavailable"))
             else:
                 gcal = gcal
-            plans.append(("Google Calendar", compute_sync_plan(config, gcal)))
+            plans.append((t("cli.sync.google_label"), compute_sync_plan(config, gcal)))
 
         # Discord plan
         token = config.get("discord_bot_token", "")
@@ -331,9 +360,14 @@ def main():
         if token and forum and guild:
             discord = DiscordPoster(token, forum, guild)
             if not args.weekly_only:
-                plans.append(("Discord", compute_discord_sync_plan(config, discord)))
+                plans.append(
+                    (
+                        t("cli.sync.discord_label"),
+                        compute_discord_sync_plan(config, discord),
+                    )
+                )
             plans.append(
-                ("Discord Weekly Overview", compute_weekly_sync_plan(config, discord))
+                (t("cli.sync.weekly_label"), compute_weekly_sync_plan(config, discord))
             )
 
         # Render the weekly overview PNG to disk so you can preview it
@@ -350,7 +384,7 @@ def main():
             events, preview_errors = _collect_week_events_for_overview(config)
             if preview_errors:
                 for err in preview_errors:
-                    print(f"Weekly preview error: {err}")
+                    print(t("cli.dry_run.weekly_preview_error", error=err))
             else:
                 monday, _sunday, _wk = current_week_bounds()
                 try:
@@ -358,38 +392,68 @@ def main():
                     preview_path = config.app_data_dir / "weekly_preview.png"
                     preview_path.write_bytes(png)
                     print(
-                        f"Weekly overview preview written to: {preview_path} "
-                        f"({len(events)} raid(s), {len(png)} bytes)\n"
+                        t(
+                            "cli.dry_run.weekly_preview_written",
+                            path=preview_path,
+                            events=len(events),
+                            bytes=len(png),
+                        )
                     )
                 except Exception as e:
-                    print(f"Weekly preview render failed: {e}\n")
+                    print(t("cli.dry_run.weekly_preview_render_failed", error=e))
 
         for label, plan in plans:
             for err in plan.errors:
-                print(f"{label} error: {err}")
+                print(t("cli.dry_run.label_error", label=label, error=err))
             if plan.errors:
                 continue
             if not plan.entries:
-                print(f"{label}: no changes.")
+                print(t("cli.dry_run.no_changes", label=label))
             else:
                 print(
-                    f"{label}: {len(plan.creates)} to create, "
-                    f"{len(plan.updates)} to update, "
-                    f"{len(plan.deletes)} to delete\n"
+                    t(
+                        "cli.dry_run.summary",
+                        label=label,
+                        creates=len(plan.creates),
+                        updates=len(plan.updates),
+                        deletes=len(plan.deletes),
+                    )
                 )
-                act_w = max(len(e.action.value) for e in plan.entries)
-                title_w = max(len(e.title) for e in plan.entries)
-                date_w = max((len(e.date) for e in plan.entries), default=0)
-                time_w = max((len(e.time) for e in plan.entries), default=0)
+                col_action = t("cli.dry_run.table_action")
+                col_title = t("cli.dry_run.table_title")
+                col_date = t("cli.dry_run.table_date")
+                col_time = t("cli.dry_run.table_time")
+                col_info = t("cli.dry_run.table_info")
+                action_labels = {
+                    e.action.value: t(f"preview.action_{e.action.value}")
+                    for e in plan.entries
+                }
+                act_w = max(
+                    max(len(v) for v in action_labels.values()),
+                    len(col_action),
+                )
+                title_w = max(
+                    max(len(e.title) for e in plan.entries),
+                    len(col_title),
+                )
+                date_w = max(
+                    max((len(e.date) for e in plan.entries), default=0),
+                    len(col_date),
+                )
+                time_w = max(
+                    max((len(e.time) for e in plan.entries), default=0),
+                    len(col_time),
+                )
                 header = (
-                    f"{'Action':<{act_w}}  {'Title':<{title_w}}  "
-                    f"{'Date':<{date_w}}  {'Time':<{time_w}}  Info"
+                    f"{col_action:<{act_w}}  {col_title:<{title_w}}  "
+                    f"{col_date:<{date_w}}  {col_time:<{time_w}}  {col_info}"
                 )
                 print(header)
                 print("-" * len(header))
                 for e in plan.entries:
+                    action_text = action_labels[e.action.value]
                     print(
-                        f"{e.action.value:<{act_w}}  {e.title:<{title_w}}  "
+                        f"{action_text:<{act_w}}  {e.title:<{title_w}}  "
                         f"{e.date:<{date_w}}  {e.time:<{time_w}}  {e.participants_info}"
                     )
             print()
@@ -400,14 +464,12 @@ def main():
         gcal = GoogleCalendarClient(config.token_path, config.client_secrets_path)
         if gcal.load_credentials():
             result = execute_sync(config, gcal)
-            log.info("Google Calendar: %s", result)
+            log.info("%s: %s", t("cli.sync.google_label"), result)
             if result.errors:
                 for err in result.errors:
                     log.error("  %s", err)
         else:
-            log.warning(
-                "Google credentials not found or expired, skipping Google Calendar sync"
-            )
+            log.warning(t("cli.sync.google_creds_missing_warning"))
 
     # Discord sync
     token = config.get("discord_bot_token", "")
@@ -417,7 +479,7 @@ def main():
         discord = DiscordPoster(token, forum, guild)
         if args.force and not args.weekly_only:
             mapping = config.get("discord_message_mapping", {})
-            log.info("Force resync: deleting %d tracked thread(s)", len(mapping))
+            log.info(t("cli.sync.force_resync_deleting", count=len(mapping)))
             for _event_id, info in mapping.items():
                 ch_id = info.get("channel_id")
                 if not ch_id:
@@ -425,23 +487,23 @@ def main():
                 try:
                     discord.delete_thread(ch_id)
                 except Exception as e:
-                    log.error("Force resync: failed to delete thread %s: %s", ch_id, e)
+                    log.error(
+                        t("cli.sync.force_resync_delete_failed", id=ch_id, error=e)
+                    )
             config.set("discord_message_mapping", {})
         if not args.weekly_only:
             result = execute_discord_sync(config, discord)
-            log.info("Discord: %s", result)
+            log.info("%s: %s", t("cli.sync.discord_label"), result)
             if result.errors:
                 for err in result.errors:
                     log.error("  %s", err)
         weekly_result = execute_weekly_sync(config, discord)
-        log.info("Discord Weekly Overview: %s", weekly_result)
+        log.info("%s: %s", t("cli.sync.weekly_label"), weekly_result)
         if weekly_result.errors:
             for err in weekly_result.errors:
                 log.error("  %s", err)
     elif args.discord_only or args.weekly_only:
-        log.error(
-            "Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config."
-        )
+        log.error(t("cli.sync.discord_not_configured"))
         sys.exit(1)
 
     # Check for updates (non-blocking, just inform)
@@ -451,9 +513,11 @@ def main():
         info = check_for_update()
         if info and info.is_newer:
             log.info(
-                "Update available: v%s -> v%s. Run with --update to install.",
-                info.current_version,
-                info.latest_version,
+                t(
+                    "cli.update.available_log",
+                    current=info.current_version,
+                    latest=info.latest_version,
+                )
             )
     except Exception:
         pass  # never fail the sync because of an update check

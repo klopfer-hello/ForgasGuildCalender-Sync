@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from fgc_sync._version import APP_NAME, about_text
 from fgc_sync.controllers.sync_controller import SyncController
+from fgc_sync.i18n import t
 from fgc_sync.models import SyncResult, UpdateInfo
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
@@ -180,17 +181,23 @@ class AppController:
         from PySide6.QtWidgets import QMessageBox
 
         msg = QMessageBox()
-        msg.setWindowTitle("Update Available")
+        msg.setWindowTitle(t("app_controller.update_available_title"))
         msg.setText(
-            f"A new version of {APP_NAME} is available.\n\n"
-            f"Current version: v{info.current_version}\n"
-            f"New version: v{info.latest_version}"
+            t(
+                "app_controller.update_available_message",
+                current=info.current_version,
+                latest=info.latest_version,
+            )
         )
         msg.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        msg.button(QMessageBox.StandardButton.Yes).setText("Update Now")
-        msg.button(QMessageBox.StandardButton.No).setText("Later")
+        msg.button(QMessageBox.StandardButton.Yes).setText(
+            t("app_controller.update_now_button")
+        )
+        msg.button(QMessageBox.StandardButton.No).setText(
+            t("app_controller.later_button")
+        )
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
         if msg.exec() == QMessageBox.StandardButton.Yes:
             self._perform_update()
@@ -206,28 +213,28 @@ class AppController:
             result = perform_update(self._pending_update)
         except Exception as e:
             log.exception("Update failed")
-            QMessageBox.warning(None, "Update Failed", str(e))
+            QMessageBox.warning(None, t("app_controller.update_failed_title"), str(e))
             return
 
         if result == "exit":
             QMessageBox.information(
                 None,
-                "Update Complete",
-                "The update has been downloaded and will be applied when "
-                "the application closes.\n\nPlease restart the application "
-                "to use the new version.",
+                t("app_controller.update_complete_title"),
+                t("app_controller.update_complete_message", result=""),
             )
             self._quit()
         else:
-            QMessageBox.information(None, "Update Complete", result)
+            QMessageBox.information(
+                None, t("app_controller.update_complete_title"), result
+            )
 
     def _show_about(self):
         from PySide6.QtWidgets import QMessageBox
 
         text = about_text()
-        text += "\n\nChecking for updates..."
+        text += "\n\n" + t("app_controller.checking_updates")
         self._about_box = QMessageBox()
-        self._about_box.setWindowTitle(f"About {APP_NAME}")
+        self._about_box.setWindowTitle(t("app_controller.about_title", app=APP_NAME))
         self._about_box.setText(text)
         self._about_box.show()
 
@@ -260,9 +267,11 @@ class AppController:
         if info and info.is_newer:
             self._pending_update = info
             self._tray.set_update_available(info.latest_version)
-            text += f"\n\nUpdate available: v{info.latest_version}"
+            text += "\n\n" + t(
+                "app_controller.update_found", version=info.latest_version
+            )
         else:
-            text += "\n\nYou are using the latest version."
+            text += "\n\n" + t("app_controller.up_to_date")
 
         if self._about_box:
             self._about_box.setText(text)
@@ -270,7 +279,7 @@ class AppController:
                 from PySide6.QtWidgets import QMessageBox
 
                 update_btn = self._about_box.addButton(
-                    "Update Now",
+                    t("app_controller.update_now_button"),
                     QMessageBox.ButtonRole.AcceptRole,
                 )
                 update_btn.clicked.connect(self._about_update_now)
@@ -287,10 +296,14 @@ class AppController:
         self._tray.update_status(status)
 
         if result.errors:
-            self._tray.show_notification("Sync Error", "\n".join(result.errors[:3]))
+            self._tray.show_notification(
+                t("app_controller.sync_error_title"), "\n".join(result.errors[:3])
+            )
             log.error("Sync errors: %s", result.errors)
         elif result.total_changes > 0:
-            self._tray.show_notification("Calendar Synced", status)
+            self._tray.show_notification(
+                t("app_controller.calendar_synced_title"), status
+            )
 
         log.info("Sync complete: %s", status)
 

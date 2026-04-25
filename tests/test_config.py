@@ -2,6 +2,7 @@
 
 import json
 
+from fgc_sync.services import config_migrations
 from fgc_sync.services.config import Config, decode_setup_code, encode_setup_code
 
 # --- encode_setup_code / decode_setup_code ---
@@ -223,3 +224,85 @@ class TestConfigProperties:
         path = tmp_path / "config.json"
         cfg = Config(path)
         assert cfg.app_data_dir == tmp_path
+
+
+class TestSchemaMigrations:
+    def test_unversioned_config_gets_language_default(self, tmp_path):
+        # Pre-i18n configs have no schema_version and no language
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"wow_path": "C:/WoW", "guild_key": "MyGuild"}),
+            encoding="utf-8",
+        )
+        cfg = Config(path)
+        assert cfg.get("language") == "en-UK"
+        assert cfg.get("schema_version") == config_migrations.CURRENT_SCHEMA_VERSION
+        # Should be persisted on disk
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["language"] == "en-UK"
+        assert raw["schema_version"] == config_migrations.CURRENT_SCHEMA_VERSION
+
+    def test_unversioned_config_keeps_existing_language(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"language": "de-DE", "wow_path": "C:/WoW"}),
+            encoding="utf-8",
+        )
+        cfg = Config(path)
+        assert cfg.get("language") == "de-DE"
+        assert cfg.get("schema_version") == config_migrations.CURRENT_SCHEMA_VERSION
+
+    def test_already_versioned_config_is_untouched(self, tmp_path):
+        path = tmp_path / "config.json"
+        original = {
+            "schema_version": config_migrations.CURRENT_SCHEMA_VERSION,
+            "language": "de-DE",
+            "wow_path": "C:/WoW",
+        }
+        path.write_text(json.dumps(original), encoding="utf-8")
+        before = path.read_bytes()
+        Config(path)
+        after = path.read_bytes()
+        # No migration needed → file should not have been rewritten
+        assert before == after
+
+    def test_first_time_install_does_not_persist_migration(self, tmp_path):
+        # No file exists — Config should not write anything on instantiation
+        path = tmp_path / "config.json"
+        Config(path)
+        assert not path.exists()
+
+    def test_future_version_left_alone(self, tmp_path):
+        # Forward-compat: a config from a newer app version should not be
+        # downgraded or rewritten by the current code
+        path = tmp_path / "config.json"
+        future = {
+            "schema_version": config_migrations.CURRENT_SCHEMA_VERSION + 5,
+            "language": "fr-FR",
+            "future_field": "hello",
+        }
+        path.write_text(json.dumps(future), encoding="utf-8")
+        before = path.read_bytes()
+        cfg = Config(path)
+        assert cfg.get("language") == "fr-FR"
+        assert cfg.get("future_field") == "hello"
+        assert path.read_bytes() == before
+
+    def test_corrupt_version_recovers(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"schema_version": "not-a-number"}),
+            encoding="utf-8",
+        )
+        cfg = Config(path)
+        # Treated as v0 → migrations re-run → ends up at current
+        assert cfg.get("schema_version") == config_migrations.CURRENT_SCHEMA_VERSION
+        assert cfg.get("language") == "en-UK"
+
+    def test_apply_all_is_idempotent(self):
+        data = {
+            "schema_version": config_migrations.CURRENT_SCHEMA_VERSION,
+            "language": "en-UK",
+        }
+        assert config_migrations.apply_all(data) is False
+        assert config_migrations.apply_all(data) is False

@@ -8,6 +8,7 @@ from importlib import resources
 
 from PIL import Image, ImageDraw, ImageFont
 
+from fgc_sync.i18n import t, tl
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent, Participant
 
@@ -252,16 +253,8 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
         from datetime import date as date_cls
 
         dt = date_cls.fromisoformat(event.date)
-        day_names = [
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-            "Sunday",
-        ]
-        day_name = day_names[dt.weekday()]
+        day_names = tl("roster.weekday_full")
+        day_name = day_names[dt.weekday()] if len(day_names) == 7 else dt.strftime("%A")
         date_str = f"{day_name}, {event.date}    {event.time_str}"
     except ValueError:
         date_str = f"{event.date}  {event.time_str}"
@@ -273,11 +266,12 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
     if location:
         draw.text((PADDING, 30 * SCALE), location, fill=SUBTEXT_COLOR, font=font)
 
-    stats = (
-        f"Confirmed: {len(confirmed)}    "
-        f"Signed: {len(signed)}    "
-        f"Bench: {len(benched)}    "
-        f"Planned: {len(confirmed) + len(benched)}"
+    stats = t(
+        "roster.stats",
+        confirmed=len(confirmed),
+        signed=len(signed),
+        bench=len(benched),
+        planned=len(confirmed) + len(benched),
     )
     draw.text((PADDING, 48 * SCALE), stats, fill=SUBTEXT_COLOR, font=font_small)
 
@@ -301,7 +295,7 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
                 )
                 draw.text(
                     (x + 6 * SCALE, y + 5 * SCALE),
-                    f"Group {g}",
+                    t("roster.group_label", n=g),
                     fill=TEXT_COLOR,
                     font=font_header,
                 )
@@ -326,7 +320,7 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
             img,
             draw,
             ungrouped_confirmed,
-            "Confirmed (unassigned)",
+            t("roster.section_confirmed_unassigned"),
             y,
             font,
             font_header,
@@ -335,13 +329,25 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
     # -- Signed --
     if signed:
         y = _draw_section(
-            img, draw, signed, f"Signed ({len(signed)})", y, font, font_header
+            img,
+            draw,
+            signed,
+            t("roster.section_signed", count=len(signed)),
+            y,
+            font,
+            font_header,
         )
 
     # -- Benched --
     if benched:
         y = _draw_section(
-            img, draw, benched, f"Bench ({len(benched)})", y, font, font_header
+            img,
+            draw,
+            benched,
+            t("roster.section_bench", count=len(benched)),
+            y,
+            font,
+            font_header,
         )
 
     # -- Footer: role & class counts --
@@ -354,12 +360,15 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
         role_counts[p.role_code] += 1
         class_counts[p.class_code] += 1
 
+    role_label_keys = {
+        "TANK": "roster.role_tanks",
+        "HEALER": "roster.role_healers",
+        "DAMAGER": "roster.role_dds",
+    }
     role_text_parts = []
     for role in ("TANK", "HEALER", "DAMAGER"):
         if role_counts.get(role, 0) > 0:
-            role_text_parts.append(
-                f"{ROLE_LABELS.get(role, role)}s ({role_counts[role]})"
-            )
+            role_text_parts.append(f"{t(role_label_keys[role])} ({role_counts[role]})")
     role_text = "    ".join(role_text_parts)
     draw.text((PADDING, y), role_text, fill=SUBTEXT_COLOR, font=font_small)
     y += 18 * SCALE

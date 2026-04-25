@@ -35,6 +35,11 @@ src/fgc_sync/
 │   ├── sync.py      #   SyncResult, SyncPlanEntry, SyncPlan
 │   └── update.py    #   UpdateInfo, InstallMode
 │
+├── i18n/            # Translations + loader (auto-discovered .json files)
+│   ├── __init__.py  #   t(), tl(), set_language(), available_languages()
+│   ├── en-UK.json   #   English (reference language — source of truth)
+│   └── de-DE.json   #   Deutsch
+│
 ├── services/        # Business logic (no UI, no Qt)
 │   ├── config.py    #   JSON config + setup codes + transactions
 │   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
@@ -53,7 +58,7 @@ src/fgc_sync/
 ├── views/           # V — Pure Qt UI, emits signals
 │   ├── styles.py            #   System-aware light/dark stylesheet
 │   ├── tray_icon.py         #   System tray icon + menu
-│   ├── setup_wizard.py      #   First-run wizard (WoW → Discord → Google)
+│   ├── setup_wizard.py      #   First-run wizard (Language → WoW → Discord → Google)
 │   ├── settings_dialog.py   #   Post-setup config changes
 │   └── preview_dialog.py    #   Sync preview table
 │
@@ -66,10 +71,11 @@ src/fgc_sync/
 ### Dependency Rules
 
 - **Models** depend on nothing
-- **Services** depend on models and external libraries only
-- **Controllers** depend on services and models
-- **Views** depend on models (for display) and Qt only
-- Views never call services directly — controllers mediate
+- **i18n** depends on nothing (stdlib only)
+- **Services** depend on models, **i18n**, and external libraries only
+- **Controllers** depend on services, models, and i18n
+- **Views** depend on models, i18n, and Qt only
+- Views never call service functions directly — controllers mediate
 
 ### File Structure
 
@@ -88,6 +94,83 @@ ForgasGuildCalendar-Sync/
 ├── src/fgc_sync/               # Package source (see above)
 └── tests/                      # pytest unit tests
 ```
+
+---
+
+## Internationalization (i18n)
+
+User-facing text (CLI prompts, GUI labels, Discord thread names, image labels, tray notifications, log messages shown to the user) is loaded from JSON files at runtime. Logger output that targets developers/diagnostics stays English.
+
+### File layout
+
+- `src/fgc_sync/i18n/<code>.json` — one file per language (e.g. `en-UK.json`, `de-DE.json`)
+- Codes are filenames (without `.json`) — `available_languages()` discovers them at runtime
+- **Reference language** = `en-UK`. Every other file is validated against it on load; missing keys log a warning and fall through to the reference value
+- `_meta.display_name` in each file is what the language picker shows
+- Files are bundled via `pyproject.toml`:
+  ```toml
+  [tool.setuptools.package-data]
+  "fgc_sync.i18n" = ["*.json"]
+  ```
+
+### Adding a new language
+
+1. Copy `en-UK.json` to `<new-code>.json` (e.g. `fr-FR.json`)
+2. Update `_meta.display_name` and translate every value
+3. Restart the app — the language appears in the picker automatically. No code changes needed.
+4. Run `pytest tests/test_i18n.py` to confirm all reference keys are present
+
+### API (`fgc_sync.i18n`)
+
+- `t(key, **kwargs)` — translate a string key in the active language; format placeholders with `str.format(**kwargs)`. Falls back to `en-UK`, then to the key itself
+- `tl(key)` — translate a list-valued key (e.g. weekday arrays)
+- `t_for(code, key, **kwargs)` / `tl_for(code, key)` — translate in a *specific* language (used for cross-language matching)
+- `t_all(key, **kwargs)` — return the value in every available language (deduplicated). Used for cross-language Discord thread/label matching
+- `set_language(code)` / `get_language()` — read/write the active language. Called automatically by `Config.__init__` and `Config.set("language", ...)`
+- `available_languages()` — auto-discovered tuple of language codes
+- `display_name(code)` — read from the file's `_meta.display_name`
+- `REFERENCE_LANGUAGE` — constant `"en-UK"`
+
+### Key naming conventions
+
+Dot-separated, organized by area:
+
+- `common.*` — shared button/dialog labels (`ok`, `cancel`, `browse`, `error_title`, ...)
+- `language.*` — language picker prompt/label
+- `cli.*` — CLI prompts, argparse help, dry-run output, sync log messages
+- `setup_wizard.*` — Qt setup wizard pages (`language`, `wow`, `discord`, `google`, `calendar`)
+- `settings.*` — Settings dialog
+- `preview.*` — Sync preview dialog (incl. `action_create` / `action_update` / `action_delete` for `SyncAction.value`)
+- `tray.*` — System tray menu and notifications
+- `app_controller.*` — Update prompts, About dialog
+- `discord.*` — Discord output (weekday array, `thread_with_word`, ping labels)
+- `weekly.*` — Weekly overview thread name, image text, summary text
+- `roster.*` — Roster card image (full weekday array, stats line, section headers, role labels)
+
+Format placeholders use named arguments (`{week:02d}`, `{path}`, `{count}`) so positional changes don't break translations.
+
+### Cross-language dedup
+
+Discord output is part of dedup logic — switching language must not orphan existing threads or trigger re-pings:
+
+- **Per-event thread names**: `DiscordPoster._candidate_thread_names(event)` returns the name in every supported language. `find_existing_thread` matches against the full set
+- **Weekly thread name**: `candidate_weekly_thread_names()` (in `weekly_overview.py`) does the same; `execute_weekly_sync` iterates over candidates when adopting an existing thread
+- **Ping label scan**: `get_already_pinged_names` checks every supported language's `discord.ping_confirmed` and `discord.ping_newly_confirmed` prefix, so `Confirmed:` / `Bestätigt:` / `Newly confirmed:` / `Neu bestätigt:` are all recognized as prior bot pings
+
+### Items intentionally NOT translated
+
+- `RAID_SHORT_NAMES` (Kara, SSC, TK, ...) — WoW raid abbreviations, gaming jargon
+- `CLASS_COLORS`, class names — WoW lore, not localized
+- Internal log messages (`log.info`, `log.error`) and exceptions — developer/diagnostic
+- Config keys and JSON field names
+- Date/number formats (still German `dd.mm.yyyy` for both languages — matches WoW addon convention)
+
+### Wiring
+
+- `Config.__init__` calls `i18n.set_language(self.get("language"))` after loading config — so importing `Config` once sets up i18n for the whole process
+- `Config.set("language", code)` triggers `i18n.set_language` so the rest of the running session sees the new value
+- CLI `main()` constructs `Config()` *before* `argparse` so `--help` is rendered in the user's language
+- The Qt `SetupWizard` has a `LanguagePage` as page 0; `validatePage` calls `i18n.set_language` and `wizard.retranslate_pages()` so subsequent pages re-render before the user sees them
 
 ---
 
@@ -132,10 +215,10 @@ Runs after Google Calendar sync. Posts events within the next 7 days (`DISCORD_L
 
 ### Forum Threads
 
-- **Thread name**: `Do 03.04. 20:00 — Gruul mit Forga` (German weekday, date, time, short raid name, creator)
-- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (`RAID_SHORT_NAMES`)
+- **Thread name**: `<weekday> dd.mm. HH:MM — <Raid> <with-word> <creator>` (e.g. `Do 03.04. 20:00 — Gruul mit Forga` in `de-DE`, `Thu 03.04. 20:00 — Gruul with Forga` in `en-UK`). Built by `DiscordPoster._format_thread_name(event, language)`; the public `_thread_name` returns the active-language form. `_candidate_thread_names` returns every supported-language variant for cross-language dedup
+- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (`RAID_SHORT_NAMES`) — *not* translated
 - **Starter message**: roster image posted as part of thread creation
-- **Pings**: "Confirmed:" on creation, "Newly confirmed:" on updates
+- **Pings**: `discord.ping_confirmed` label on creation, `discord.ping_newly_confirmed` on updates (translated). `get_already_pinged_names` accepts every supported language's prefixes so language switches don't cause re-pings
 - **Cleanup**: threads deleted 24h after event start; 404 on already-deleted threads is silently ignored
 - Threads are created in chronological order
 
@@ -171,12 +254,12 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 ### Sync Logic (`sync_engine.py` → `execute_weekly_sync`)
 
-Runs after per-event Discord sync. Maintains a **single permanent** forum thread named `Wöchentliche Raid Übersicht` (constant `WEEKLY_THREAD_NAME`) with a school-timetable-style image of the current ISO week.
+Runs after per-event Discord sync. Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — active-language: `Wöchentliche Raid Übersicht` / `Weekly Raid Overview`) with a school-timetable-style image of the current ISO week.
 
 1. **Stale-data guard** (same `_is_local_data_stale` check as per-event sync): skip if another client has newer SavedVariables data on Discord
 2. Collect all guild events falling in the current ISO week (Mon–Sun) — no roster filter, no 7-day lookahead; `collect_week_events` in `weekly_overview.py`
 3. Compute `content_hash` over event_id + date + time + raid + creator + confirmed/signed counts
-4. If no thread yet in mapping → `find_thread_by_name` (adopt) or `create_weekly_thread` (post image + summary text)
+4. If no thread yet in mapping → iterate `candidate_weekly_thread_names()` (every supported-language variant) and adopt the first match; else `create_weekly_thread` (post image + summary text in the active language)
 5. If thread exists and `{hash, week_key}` unchanged → skip
 6. Else → `update_weekly_image` (PATCH image + summary text in the same starter message)
 7. Persist `discord_weekly_mapping` to config
@@ -198,6 +281,8 @@ Runs after per-event Discord sync. Maintains a **single permanent** forum thread
 dd.mm.yyyy – dd.mm.yyyy
 N Raid(s) geplant
 ```
+
+(`en-UK` produces `Raid Overview — CW <nn> / <year>` and `N raid(s) scheduled`.)
 
 Sent as the starter message `content` on create, re-sent on every PATCH so it tracks the current week.
 
@@ -223,7 +308,8 @@ Single dict (not keyed by event id):
 - Runs a single sync cycle and exits — designed for cron
 - No Qt/PySide6 dependency
 - Flags: `--dry-run`, `--discord-only`, `--weekly-only`, `--force`, `--export-code`, `--setup`, `--config-dir`, `--version`, `--about`, `--check-update`, `--update`
-- Interactive setup on first run using `questionary`
+- Interactive setup on first run using `questionary` — first prompt is the language picker, then WoW path, account, guild, Discord, Google
+- `--help` is rendered in the user's configured language (`Config()` is loaded before `argparse` is constructed)
 - Handles git bash `/d/...` paths on Windows (`_normalize_path`)
 - Config at `~/.config/ForgasGuildCalendar-Sync/config.json` (XDG)
 
@@ -263,6 +349,7 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 
 | Key | Purpose |
 |-----|---------|
+| `language` | UI / output language code (default: `en-UK`; e.g. `de-DE`). Setting this calls `i18n.set_language` |
 | `wow_path` | WoW installation directory |
 | `account_folder` | WTF account folder name |
 | `guild_key` | Guild scope key (e.g. `Thunderstrike-Sauercrowd Community`) |
@@ -363,6 +450,15 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - Use `config.saved_variables_path` for path construction
 - `SAVED_VARIABLES_FILENAME` lives in `services/config.py`
 
+### Internationalization
+
+- Every user-facing string goes through `t()` / `tl()` from `fgc_sync.i18n` — no hardcoded English or German in views, CLI, Discord output, or images
+- Logger messages stay English (developer-facing). User-facing notifications and tray status do go through `t()`
+- New keys go in `en-UK.json` first (the reference) and then in every other language file. The `test_i18n` validation will fail otherwise
+- Format placeholders are named (`{path}`, `{count}`), never positional, so translators can reorder freely
+- Don't import the same key in two places with two different fallbacks — define it once and reuse
+- For any output that participates in dedup logic (Discord thread names, ping label scans), use the `t_all()` helper or build a candidate list across `available_languages()` so a language switch doesn't churn remote state
+
 ### Google Calendar
 
 - Always verify events exist before assuming (externally deleted)
@@ -380,9 +476,10 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 
 ### Weekly Overview
 
-- Thread name is constant (`WEEKLY_THREAD_NAME`) — don't change it per week; only the starter message content and image change
+- Thread name comes from `get_weekly_thread_name()` (active-language) — don't change it per week; only the starter message content and image change
+- When adopting an existing thread, iterate `candidate_weekly_thread_names()` so a language switch picks up an old-language thread instead of creating a new one
 - Both `execute_weekly_sync` and `compute_weekly_sync_plan` must respect the stale-data guard (`_is_local_data_stale`)
-- `compute_weekly_hash` must cover every field the image displays, so content changes always trigger a PATCH
+- `compute_weekly_hash` must cover every field the image displays, so content changes always trigger a PATCH. Translated labels are *not* part of the hash — image content depends on language but adopting the existing thread + PATCHing avoids churn
 - `render_weekly_overview` must handle fractional `WEEKLY_EVENT_DURATION_HOURS` (e.g. 2.5) — coerce to int where values flow to canvas dimensions
 - Lane assignment uses event start/end in minutes; parallel raids in the same day column must never overlap visually
 

@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from ..i18n import t
 from ..services.config import _app_data_dir
 
 
@@ -108,30 +109,30 @@ class TrayIcon(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._tray = QSystemTrayIcon(self)
-        self._tray.setToolTip("FGC Sync")
+        self._tray.setToolTip(t("tray.tooltip"))
 
         self._menu = QMenu()
 
-        self._status_action = QAction("Not synced yet")
+        self._status_action = QAction(t("tray.not_synced_yet"))
         self._status_action.setEnabled(False)
         self._menu.addAction(self._status_action)
         self._menu.addSeparator()
 
-        preview = QAction("Preview Sync...", self._menu)
+        preview = QAction(t("tray.preview_sync"), self._menu)
         preview.triggered.connect(self.preview_requested.emit)
         self._menu.addAction(preview)
 
-        sync = QAction("Sync Now", self._menu)
+        sync = QAction(t("tray.sync_now"), self._menu)
         sync.triggered.connect(self.sync_requested.emit)
         self._menu.addAction(sync)
 
-        settings = QAction("Settings...", self._menu)
+        settings = QAction(t("tray.settings"), self._menu)
         settings.triggered.connect(self.settings_requested.emit)
         self._menu.addAction(settings)
 
         self._menu.addSeparator()
 
-        self._autostart_action = QAction("Start with Windows", self._menu)
+        self._autostart_action = QAction(t("tray.start_with_windows"), self._menu)
         self._autostart_action.setCheckable(True)
         self._autostart_action.setChecked(is_autostart_enabled())
         self._autostart_action.toggled.connect(self._toggle_autostart)
@@ -139,7 +140,7 @@ class TrayIcon(QObject):
 
         self._menu.addSeparator()
 
-        open_log = QAction("Open Log File", self._menu)
+        open_log = QAction(t("tray.open_log_file"), self._menu)
         open_log.triggered.connect(self._open_log_file)
         self._menu.addAction(open_log)
 
@@ -150,11 +151,11 @@ class TrayIcon(QObject):
         self._update_action.setVisible(False)
         self._menu.addAction(self._update_action)
 
-        about = QAction("About...", self._menu)
+        about = QAction(t("tray.about"), self._menu)
         about.triggered.connect(self.about_requested.emit)
         self._menu.addAction(about)
 
-        quit_action = QAction("Quit", self._menu)
+        quit_action = QAction(t("tray.quit"), self._menu)
         quit_action.triggered.connect(self.quit_requested.emit)
         self._menu.addAction(quit_action)
 
@@ -178,11 +179,11 @@ class TrayIcon(QObject):
     @Slot(str)
     def update_status(self, text: str):
         now = datetime.now().strftime("%H:%M")
-        self._status_action.setText(f"Last sync: {now} - {text}")
+        self._status_action.setText(t("tray.last_sync", time=now, status=text))
 
     @Slot(str)
     def set_update_available(self, version: str):
-        self._update_action.setText(f"Update to v{version}...")
+        self._update_action.setText(t("tray.update_to", version=version))
         self._update_action.setVisible(True)
 
     @Slot()
@@ -195,8 +196,8 @@ class TrayIcon(QObject):
         except Exception:
             log.exception("Failed to open log file")
             self._tray.showMessage(
-                "Open Log Failed",
-                f"Could not open {log_path}",
+                t("tray.open_log_failed_title"),
+                t("tray.open_log_failed_message", path=log_path),
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
@@ -210,8 +211,8 @@ class TrayIcon(QObject):
             self._autostart_action.setChecked(actual)
             self._autostart_action.blockSignals(False)
             self._tray.showMessage(
-                "Autostart Error",
-                "Failed to create startup shortcut. Check logs for details.",
+                t("tray.autostart_error_title"),
+                t("tray.autostart_error_message"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )

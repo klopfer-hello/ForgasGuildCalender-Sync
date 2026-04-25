@@ -1,5 +1,8 @@
 """Tests for pure functions in discord_poster (not requiring HTTP)."""
 
+import pytest
+
+from fgc_sync import i18n
 from fgc_sync.models.enums import EventType
 from fgc_sync.models.events import CalendarEvent
 from fgc_sync.services.discord_poster import (
@@ -7,6 +10,24 @@ from fgc_sync.services.discord_poster import (
     _short_raid_name,
     _slugify,
 )
+
+
+@pytest.fixture
+def lang_de():
+    """Pin the active language to de-DE for the duration of a test."""
+    previous = i18n.get_language()
+    i18n.set_language("de-DE")
+    yield
+    i18n.set_language(previous)
+
+
+@pytest.fixture
+def lang_en():
+    """Pin the active language to en-UK for the duration of a test."""
+    previous = i18n.get_language()
+    i18n.set_language("en-UK")
+    yield
+    i18n.set_language(previous)
 
 
 def _make_event(**overrides) -> CalendarEvent:
@@ -92,7 +113,7 @@ class TestSlugify:
 
 
 class TestThreadName:
-    def test_format(self):
+    def test_format_de(self, lang_de):
         # 2026-04-10 is a Friday
         evt = _make_event(
             date="2026-04-10",
@@ -104,7 +125,18 @@ class TestThreadName:
         name = DiscordPoster._thread_name(evt)
         assert name == "Fr 10.04. 20:00 \u2014 Kara mit Forga"
 
-    def test_saturday(self):
+    def test_format_en(self, lang_en):
+        evt = _make_event(
+            date="2026-04-10",
+            server_hour=20,
+            server_minute=0,
+            raid="karazhan",
+            creator="Forga",
+        )
+        name = DiscordPoster._thread_name(evt)
+        assert name == "Fri 10.04. 20:00 \u2014 Kara with Forga"
+
+    def test_saturday(self, lang_de):
         # 2026-04-11 is a Saturday
         evt = _make_event(
             date="2026-04-11",
@@ -118,19 +150,19 @@ class TestThreadName:
         assert "Gruul" in name
         assert "Dastanky" in name
 
-    def test_no_raid_uses_title(self):
+    def test_no_raid_uses_title(self, lang_de):
         evt = _make_event(
             date="2026-04-10", raid="", title="Custom Event", creator="Test"
         )
         name = DiscordPoster._thread_name(evt)
         assert "Custom Event" in name
 
-    def test_no_creator_uses_unknown(self):
+    def test_no_creator_uses_unknown(self, lang_de):
         evt = _make_event(date="2026-04-10", creator="", raid="gruul")
         name = DiscordPoster._thread_name(evt)
         assert "Unknown" in name
 
-    def test_leading_zeros(self):
+    def test_leading_zeros(self, lang_de):
         # 2026-01-05 is a Monday
         evt = _make_event(
             date="2026-01-05", server_hour=9, server_minute=5, raid="gruul", creator="X"
@@ -138,3 +170,16 @@ class TestThreadName:
         name = DiscordPoster._thread_name(evt)
         assert "05.01." in name
         assert "09:05" in name
+
+    def test_candidate_names_includes_both_languages(self):
+        evt = _make_event(
+            date="2026-04-10",
+            server_hour=20,
+            server_minute=0,
+            raid="karazhan",
+            creator="Forga",
+        )
+        candidates = DiscordPoster._candidate_thread_names(evt)
+        # Both German and English variants should be present
+        assert any("mit" in n for n in candidates)
+        assert any("with" in n for n in candidates)
