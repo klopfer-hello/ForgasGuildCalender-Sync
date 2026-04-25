@@ -25,57 +25,25 @@ System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/e
 
 ## Architecture
 
-### MVC Layer Structure
+### Layers
 
-```
-src/fgc_sync/
-├── models/          # M — Pure data, no dependencies
-│   ├── enums.py     #   Attendance, EventType, SyncAction
-│   ├── events.py    #   CalendarEvent, Participant
-│   ├── sync.py      #   SyncResult, SyncPlanEntry, SyncPlan
-│   └── update.py    #   UpdateInfo, InstallMode
-│
-├── i18n/            # Translations + loader (auto-discovered .json files)
-│   ├── __init__.py  #   t(), tl(), set_language(), available_languages()
-│   ├── en-UK.json   #   English (reference language — source of truth)
-│   └── de-DE.json   #   Deutsch
-│
-├── services/        # Business logic (no UI, no Qt)
-│   ├── config.py    #   JSON config + setup codes + transactions
-│   ├── lua_parser.py        #   Parse FGC_DB SavedVariables
-│   ├── discord_poster.py    #   Discord REST API (forum threads + images + pings)
-│   ├── roster_image.py      #   Pillow-based roster card renderer
-│   ├── weekly_overview.py   #   Pillow-based week-timetable renderer + helpers
-│   ├── google_calendar.py   #   OAuth2 + Calendar CRUD
-│   ├── sync_engine.py       #   Diff & sync (create/update/delete) + dry-run plans
-│   ├── file_watcher.py      #   Watchdog observer with debounce
-│   └── updater.py           #   GitHub release check + self-update
-│
-├── controllers/     # C — Mediates views and services
-│   ├── app_controller.py    #   Orchestrates lifecycle, wires signals
-│   └── sync_controller.py   #   QThread sync, preview computation
-│
-├── views/           # V — Pure Qt UI, emits signals
-│   ├── styles.py            #   System-aware light/dark stylesheet
-│   ├── tray_icon.py         #   System tray icon + menu
-│   ├── setup_wizard.py      #   First-run wizard (Language → WoW → Discord → Google)
-│   ├── settings_dialog.py   #   Post-setup config changes
-│   └── preview_dialog.py    #   Sync preview table
-│
-├── _version.py      # Version, license, GitHub repo constant
-├── app.py           # QApplication bootstrap (Windows GUI)
-├── cli.py           # Headless CLI entry point (Linux/cron)
-└── __main__.py      # python -m fgc_sync (auto-detects mode)
-```
+Source lives in `src/fgc_sync/`, layered (run `ls src/fgc_sync/` for the actual file list):
+
+- **`models/`** — pure data classes and enums (`CalendarEvent`, `Participant`, `SyncResult`, `SyncPlan`, `UpdateInfo`, ...)
+- **`i18n/`** — translation loader (`__init__.py`) + JSON files (one per language, auto-discovered)
+- **`services/`** — business logic with no Qt: SavedVariables parsing, Discord REST, Google Calendar, image rendering, sync diffing, file watching, self-update
+- **`controllers/`** — wires services to views (Qt signals, threading)
+- **`views/`** — Qt widgets (tray, wizard, settings, preview); pure UI, emits signals only
+- **`cli.py`** — headless entry point (no Qt import)
+- **`app.py`** — QApplication bootstrap
+- **`__main__.py`** — `python -m fgc_sync` dispatcher
 
 ### Dependency Rules
 
-- **Models** depend on nothing
-- **i18n** depends on nothing (stdlib only)
-- **Services** depend on models, **i18n**, and external libraries only
-- **Controllers** depend on services, models, and i18n
-- **Views** depend on models, i18n, and Qt only
-- Views never call service functions directly — controllers mediate
+- **Models** and **i18n** depend on nothing in the project (stdlib only)
+- **Services** depend on models, i18n, and external libraries
+- **Controllers** depend on services, models, i18n
+- **Views** depend on models, i18n, and Qt — never on services directly (controllers mediate)
 
 ### File Structure
 
@@ -120,16 +88,9 @@ User-facing text (CLI prompts, GUI labels, Discord thread names, image labels, t
 3. Restart the app — the language appears in the picker automatically. No code changes needed.
 4. Run `pytest tests/test_i18n.py` to confirm all reference keys are present
 
-### API (`fgc_sync.i18n`)
+### API
 
-- `t(key, **kwargs)` — translate a string key in the active language; format placeholders with `str.format(**kwargs)`. Falls back to `en-UK`, then to the key itself
-- `tl(key)` — translate a list-valued key (e.g. weekday arrays)
-- `t_for(code, key, **kwargs)` / `tl_for(code, key)` — translate in a *specific* language (used for cross-language matching)
-- `t_all(key, **kwargs)` — return the value in every available language (deduplicated). Used for cross-language Discord thread/label matching
-- `set_language(code)` / `get_language()` — read/write the active language. Called automatically by `Config.__init__` and `Config.set("language", ...)`
-- `available_languages()` — auto-discovered tuple of language codes
-- `display_name(code)` — read from the file's `_meta.display_name`
-- `REFERENCE_LANGUAGE` — constant `"en-UK"`
+See docstrings in `i18n/__init__.py`. The functions you'll typically reach for: `t()`, `tl()`, `t_for()`, `t_all()`, `set_language()`, `available_languages()`, `display_name()`. `Config.__init__` and `Config.set("language", ...)` call `set_language` automatically — you rarely need to call it yourself.
 
 ### Key naming conventions
 
@@ -178,14 +139,13 @@ Discord output is part of dedup logic — switching language must not orphan exi
 
 ### Sync Logic (`sync_engine.py` → `execute_sync`)
 
-1. Parse SavedVariables, extract future events
-2. Filter to events where the user's character is **Signed** (1) or **Confirmed** (2)
-3. For each event:
-   - **Not in mapping** → search Google Calendar for duplicate (same title+date), adopt if found, else create
-   - **In mapping, revision changed** → verify exists in Google, update or re-create
-   - **In mapping, revision same** → verify exists, re-create if deleted externally, else skip
-4. Events in mapping but not in WoW (or in `deletedEvents`) → delete from Google Calendar
-5. Persist `event_mapping` to config
+Read the function for the actual flow. Invariants that have to hold:
+
+- Only events where the user's character is **Signed** or **Confirmed** are synced
+- **Adopt before create**: every event missing from the local mapping is searched in Google by title+date before a new event is created (recovers from lost mapping)
+- **Verify before trust**: even when revision matches, the Google event is checked for existence — externally deleted events are re-created
+- **Mass-deletion guard**: if WoW yields zero events but the mapping is non-empty, treat it as a parser failure and skip cleanup entirely
+- Events absent from WoW *or* listed in `deletedEvents` are deleted from Google
 
 ### Google Calendar Event Format
 
@@ -201,17 +161,13 @@ Discord output is part of dedup logic — switching language must not orphan exi
 
 ### Sync Logic (`sync_engine.py` → `execute_discord_sync`)
 
-Runs after Google Calendar sync. Posts events within the next 7 days (`DISCORD_LOOKAHEAD_DAYS`) that have a confirmed roster (group assignments).
+Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7) that have a confirmed roster (group assignments). Invariants:
 
-1. **Stale-data guard** (`_is_local_data_stale`): compares local SavedVariables mtime against the highest `_t<unix_ts>` in remote image filenames. If local is older → skip entire sync.
-2. Collect future guild events (not filtered by personal participation)
-3. For each event:
-   - **Not in mapping** → `find_existing_thread` (name match first, then attachment scan via `_find_image_in_thread`). If found → adopt with empty `pinged` list. Otherwise → create forum thread with roster image.
-   - **In mapping, hash changed** → unarchive thread, PATCH image in place (or find original image if mapping lost track, then PATCH)
-   - **In mapping, hash unchanged** → unarchive thread, fall through to ping retry
-   - **Ping logic**: scan thread history for prior bot pings (`get_already_pinged_names`), compute `to_ping = confirmed - already_pinged`, send ping message. Only resolved names are added to `pinged`.
-4. **Cleanup**: delete threads for removed events and events older than 24 hours (`EXPIRED_EVENT_HOURS`)
-5. Persist `discord_message_mapping` to config
+- **Stale-data guard first** (`_is_local_data_stale`): if any remote roster-image filename has a higher `_t<unix_ts>` than the local SavedVariables mtime, abort the entire sync — another client has newer data
+- **Adopt before create**: `find_existing_thread` matches by deterministic name (in *any* supported language) first, then falls back to scanning thread attachments
+- **Adopted threads start with `pinged=[]`** — `get_already_pinged_names` reconstructs the actual pinged set from thread history
+- **Ping the difference, not the union**: `to_ping = confirmed - (local_pinged ∪ history_pinged)`; only names that `ping_members` actually resolved are added back to `pinged`
+- Cleanup deletes threads for removed events and events older than `EXPIRED_EVENT_HOURS` (24h); 404 on already-deleted threads is silently ignored
 
 ### Forum Threads
 
@@ -254,15 +210,13 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 ### Sync Logic (`sync_engine.py` → `execute_weekly_sync`)
 
-Runs after per-event Discord sync. Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — active-language: `Wöchentliche Raid Übersicht` / `Weekly Raid Overview`) with a school-timetable-style image of the current ISO week.
+Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `Wöchentliche Raid Übersicht` / `Weekly Raid Overview`) with the current ISO week's schedule as a school-timetable image. Invariants:
 
-1. **Stale-data guard** (same `_is_local_data_stale` check as per-event sync): skip if another client has newer SavedVariables data on Discord
-2. Collect all guild events falling in the current ISO week (Mon–Sun) — no roster filter, no 7-day lookahead; `collect_week_events` in `weekly_overview.py`
-3. Compute `content_hash` over event_id + date + time + raid + creator + confirmed/signed counts
-4. If no thread yet in mapping → iterate `candidate_weekly_thread_names()` (every supported-language variant) and adopt the first match; else `create_weekly_thread` (post image + summary text in the active language)
-5. If thread exists and `{hash, week_key}` unchanged → skip
-6. Else → `update_weekly_image` (PATCH image + summary text in the same starter message)
-7. Persist `discord_weekly_mapping` to config
+- **Stale-data guard** identical to per-event sync (`_is_local_data_stale`)
+- **No roster filter, no 7-day lookahead**: every guild event in the current ISO week (Mon–Sun) is included regardless of participation status (unlike per-event threads)
+- **Thread name is constant**: only the starter message + image are PATCHed in place; the thread is never recreated per week
+- **Cross-language adoption**: when no thread is in mapping, iterate `candidate_weekly_thread_names()` so an old-language thread is adopted instead of duplicated
+- Skip when `{hash, week_key}` are both unchanged
 
 ### Image (`weekly_overview.py` → `render_weekly_overview`)
 

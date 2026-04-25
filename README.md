@@ -185,11 +185,7 @@ Syncs raids where your character is signed up or confirmed to a personal Google 
 
 ## How it works
 
-1. Reads `FGC_DB` from WoW's SavedVariables file
-2. Extracts future events from the guild calendar
-3. **Discord** (if configured): for events with a confirmed roster (group assignments) within 7 days — creates a forum thread with a roster image, pings confirmed members
-4. **Google Calendar** (if configured): for events where your character is signed up — creates/updates/deletes calendar entries
-5. Watches the SavedVariables file for changes (triggers on logout, `/reload`, character switch)
+FGC Sync watches your WoW SavedVariables file (`FGC_DB`) and pushes calendar/roster changes to Google Calendar and/or Discord. The Windows tray app reacts to file changes (triggered by `/reload`, logout, or character switch) with a 5-minute fallback poll; the headless CLI does one sync per invocation.
 
 ## CLI Reference
 
