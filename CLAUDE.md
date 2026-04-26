@@ -165,8 +165,10 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 
 - **Stale-data guard first** (`_is_local_data_stale`): if any remote roster-image filename has a higher `_t<unix_ts>` than the local SavedVariables mtime, abort the entire sync — another client has newer data
 - **Adopt before create**: `find_existing_thread` matches by deterministic name (in *any* supported language) first, then falls back to scanning thread attachments
-- **Adopted threads start with `pinged=[]`** — `get_already_pinged_names` reconstructs the actual pinged set from thread history
-- **Ping the difference, not the union**: `to_ping = confirmed - (local_pinged ∪ history_pinged)`; only names that `ping_members` actually resolved are added back to `pinged`
+- **Adopted threads start with `pinged={}`** — `get_already_pinged_names` reconstructs the actual `{name: message_id}` mapping from thread history
+- **Ping the difference, not the union**: `to_ping = confirmed - (local_pinged ∪ history_pinged).keys()`; `ping_members` returns `{name: message_id}` for resolved names — they all share one message id since they're posted in one message
+- **Unping the difference too**: members in `pinged` who are no longer confirmed have their `<@id>` mention edited out of the original ping message via `remove_mentions` (replaced with `~~@<name>~~`, `allowed_mentions: {parse: []}`). Discord does not re-notify on edits, so the other members in the same message are not re-pinged. Names with an empty message id (legacy v1 entries pre-migration) are dropped from `pinged` without an edit
+- Re-adding a previously-removed member triggers a fresh "Newly confirmed" ping — they were dropped from `pinged` on removal, so the diff sees them as new
 - Cleanup deletes threads for removed events and events older than `EXPIRED_EVENT_HOURS` (24h); 404 on already-deleted threads is silently ignored
 
 ### Forum Threads
@@ -202,7 +204,7 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 - `channel_id`: Discord thread ID
 - `message_ids`: `{image_id, hash, sv_mtime}`
-- `pinged`: list of character names successfully pinged (legacy: `confirmed`)
+- `pinged`: `{character_name: ping_message_id}` — the Discord message id is what `remove_mentions` edits when the member leaves the roster. Empty-string message id means "we know they were pinged but don't know which message" (legacy v1 rows migrated by `_migrate_to_v2`); they're treated as already-pinged but skipped on removal edits. Pre-v2 schema: `list[str]`. Pre-rename schema: lived under `confirmed`
 
 ---
 
@@ -422,8 +424,10 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 
 ### Discord
 
-- `pinged` list must only contain names that `ping_members` actually resolved
-- Thread adoption must start with empty `pinged` list
+- `pinged` is a `dict[name, message_id]` — only include names that `ping_members` actually resolved, paired with the id of the message that mentioned them
+- Thread adoption must start with empty `pinged` (`{}`); never seed it with the current roster — `get_already_pinged_names` rebuilds the per-name message ids from history
+- When removing a member from the roster, edit their `<@id>` out of the original ping message (`remove_mentions`) before forgetting the `pinged` entry; passing `allowed_mentions: {parse: []}` on the PATCH is mandatory even though edits don't re-notify by default
+- Never re-issue a ping for a name already present in `pinged` (or discovered via history) — it would notify the user a second time
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
 - Before posting a new image, always try `find_image_message` to locate the original
 - Deleting an already-deleted thread (404) must be handled silently

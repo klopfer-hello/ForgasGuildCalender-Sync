@@ -8,6 +8,7 @@ from fgc_sync.models.events import CalendarEvent, Participant
 from fgc_sync.services.sync_engine import (
     DISCORD_LOOKAHEAD_DAYS,
     EXPIRED_EVENT_HOURS,
+    _coerce_pinged,
     _collect_all_future_events,
     _collect_syncable_events,
     _event_to_datetime,
@@ -303,6 +304,39 @@ class TestCollectAllFutureEvents:
         config.set("account_folder", "X")
         _, _, errors = _collect_all_future_events(config)
         assert len(errors) == 1
+
+
+# --- _coerce_pinged ---
+
+
+class TestCoercePinged:
+    def test_none_returns_empty(self):
+        assert _coerce_pinged(None) == {}
+
+    def test_missing_pinged_returns_empty(self):
+        assert _coerce_pinged({"channel_id": "c"}) == {}
+
+    def test_dict_pinged_passes_through(self):
+        result = _coerce_pinged({"pinged": {"Alice": "msg-1", "Bob": "msg-2"}})
+        assert result == {"Alice": "msg-1", "Bob": "msg-2"}
+
+    def test_list_pinged_becomes_dict_with_empty_ids(self):
+        # Pre-v2 entries that escaped the migration (e.g. constructed in code)
+        result = _coerce_pinged({"pinged": ["Alice", "Bob"]})
+        assert result == {"Alice": "", "Bob": ""}
+
+    def test_legacy_confirmed_field_used_when_pinged_missing(self):
+        result = _coerce_pinged({"confirmed": ["Alice"]})
+        assert result == {"Alice": ""}
+
+    def test_pinged_takes_precedence_over_confirmed(self):
+        result = _coerce_pinged({"pinged": {"Alice": "msg-1"}, "confirmed": ["Bob"]})
+        assert result == {"Alice": "msg-1"}
+
+    def test_none_message_id_becomes_empty_string(self):
+        # Defensive: dict values should always be strings
+        result = _coerce_pinged({"pinged": {"Alice": None}})
+        assert result == {"Alice": ""}
 
 
 # --- Constants ---

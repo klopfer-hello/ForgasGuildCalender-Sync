@@ -464,49 +464,121 @@ class DiscordPoster:
         channel_id: str,
         names: set[str],
         label: str | None = None,
-    ) -> set[str]:
+    ) -> dict[str, str]:
         """Post a one-off ping message for the given character names.
 
         If *label* is None, the active-language ``ping_confirmed`` label is
-        used. Returns the subset of names that resolved to a Discord member
-        and were actually mentioned. Names that did not resolve are not
-        returned, so the caller can retry them on a later sync (e.g. when
-        the user finally joins the Discord server).
+        used. Returns ``{name: message_id}`` for names that resolved to a
+        Discord member and were actually mentioned (all share the same
+        message id). Names that did not resolve are absent, so the caller
+        can retry them on a later sync (e.g. when the user finally joins
+        the Discord server). The message id lets the caller later edit the
+        @mention away if the member is removed from the roster.
         """
         if label is None:
             label = t("discord.ping_confirmed")
         mentions = []
-        resolved: set[str] = set()
+        resolved: list[str] = []
         for name in sorted(names):
             user_id = self._find_member_id(name)
             if user_id:
                 mentions.append(f"<@{user_id}>")
-                resolved.add(name)
+                resolved.append(name)
 
-        if mentions:
-            self._request(
-                "POST",
-                f"/channels/{channel_id}/messages",
-                json={"content": f"{label}: " + " ".join(mentions)},
-            )
-            log.info("Discord: pinged %d members (%s)", len(mentions), label)
-        return resolved
+        if not mentions:
+            return {}
+
+        data = self._request(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            json={"content": f"{label}: " + " ".join(mentions)},
+        )
+        msg_id = data.get("id", "") if isinstance(data, dict) else ""
+        log.info("Discord: pinged %d members (%s)", len(mentions), label)
+        return {name: msg_id for name in resolved}
+
+    def remove_mentions(
+        self,
+        channel_id: str,
+        removals: dict[str, str],
+    ) -> None:
+        """Edit prior ping messages to strike out the @mentions of *removals*.
+
+        *removals* is ``{character_name: message_id}``. Mentions are replaced
+        with ``~~@<character_name>~~`` so they no longer match the
+        ``<@user_id>`` syntax — Discord renders them struck through, the
+        user is no longer counted as pinged by ``get_already_pinged_names``,
+        and (because Discord does not re-notify on edits) the other members
+        in the same message are not re-pinged. ``allowed_mentions`` is set
+        to ``parse: []`` as a belt-and-braces guard.
+        """
+        by_message: dict[str, list[str]] = {}
+        for name, msg_id in removals.items():
+            if msg_id:
+                by_message.setdefault(msg_id, []).append(name)
+
+        for msg_id, names in by_message.items():
+            try:
+                msg = self._request("GET", f"/channels/{channel_id}/messages/{msg_id}")
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    log.debug("Discord: ping message %s already deleted", msg_id)
+                    continue
+                log.warning("Discord: failed to fetch message %s: %s", msg_id, e)
+                continue
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content", "")
+            new_content = content
+            for name in names:
+                user_id = self._find_member_id(name)
+                if not user_id:
+                    continue
+                pattern = re.compile(rf"<@!?{user_id}>")
+                new_content = pattern.sub(f"~~@{name}~~", new_content)
+            if new_content == content:
+                continue
+            try:
+                self._request(
+                    "PATCH",
+                    f"/channels/{channel_id}/messages/{msg_id}",
+                    json={
+                        "content": new_content,
+                        "allowed_mentions": {"parse": []},
+                    },
+                )
+                log.info(
+                    "Discord: removed %d mention(s) from message %s",
+                    len(names),
+                    msg_id,
+                )
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    log.debug("Discord: ping message %s deleted before edit", msg_id)
+                else:
+                    log.warning(
+                        "Discord: failed to edit ping message %s: %s", msg_id, e
+                    )
 
     def get_already_pinged_names(
         self,
         channel_id: str,
         candidate_names: set[str],
-    ) -> set[str]:
-        """Scan thread history for bot ping messages and return character
-        names (from *candidate_names*) that have already been mentioned.
+    ) -> dict[str, str]:
+        """Scan thread history for bot ping messages and return
+        ``{name: message_id}`` for names from *candidate_names* that have
+        already been mentioned.
 
-        This makes ping deduplication resilient to multi-client scenarios
-        where the local ``pinged`` list is empty but the thread already
-        contains ping messages from another client.
+        Returns the *most recent* message id per name when a name appears
+        in multiple ping messages. Makes ping deduplication resilient to
+        multi-client scenarios where the local ``pinged`` mapping is empty
+        but the thread already contains ping messages from another client,
+        and gives the caller a message id it can later edit to remove the
+        @mention if the member leaves the roster.
         """
         bot_id = self._get_bot_user_id()
         if not bot_id:
-            return set()
+            return {}
 
         try:
             messages = self._request(
@@ -515,7 +587,7 @@ class DiscordPoster:
                 params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
         except requests.HTTPError:
-            return set()
+            return {}
 
         # Collect every label prefix this bot might use, across all
         # supported languages — so language switches don't cause re-pings.
@@ -527,24 +599,30 @@ class DiscordPoster:
             )
         )
 
-        # Collect all user IDs the bot has already pinged
-        pinged_user_ids: set[str] = set()
+        # Pre-resolve each candidate to its Discord user id once.
+        user_id_to_name: dict[str, str] = {}
+        for name in candidate_names:
+            uid = self._find_member_id(name)
+            if uid:
+                user_id_to_name[uid] = name
+
+        if not user_id_to_name:
+            return {}
+
+        # Discord returns messages newest-first, so the first time we see
+        # a user id is the most recent ping for that name.
+        result: dict[str, str] = {}
         for msg in messages or []:
             if msg.get("author", {}).get("id") != bot_id:
                 continue
             content = msg.get("content", "")
-            if any(content.startswith(p) for p in ping_prefixes):
-                pinged_user_ids.update(re.findall(r"<@(\d+)>", content))
-
-        if not pinged_user_ids:
-            return set()
-
-        # Reverse-resolve: check which candidate names map to already-pinged IDs
-        result: set[str] = set()
-        for name in candidate_names:
-            user_id = self._find_member_id(name)
-            if user_id and user_id in pinged_user_ids:
-                result.add(name)
+            if not any(content.startswith(p) for p in ping_prefixes):
+                continue
+            msg_id = msg.get("id", "")
+            for uid in re.findall(r"<@!?(\d+)>", content):
+                name = user_id_to_name.get(uid)
+                if name and name not in result:
+                    result[name] = msg_id
 
         if result:
             log.debug("Discord: %d names already pinged in thread history", len(result))

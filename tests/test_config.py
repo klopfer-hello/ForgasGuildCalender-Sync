@@ -306,3 +306,98 @@ class TestSchemaMigrations:
         }
         assert config_migrations.apply_all(data) is False
         assert config_migrations.apply_all(data) is False
+
+
+class TestPingedDictMigration:
+    """v2: pinged list[str] → dict[name, message_id] with empty-string sentinel."""
+
+    def test_list_is_converted_to_dict_with_empty_message_ids(self):
+        data = {
+            "schema_version": 1,
+            "discord_message_mapping": {
+                "evt-1": {
+                    "channel_id": "ch1",
+                    "message_ids": {"image_id": "img1", "hash": "h1"},
+                    "pinged": ["Alice", "Bob"],
+                }
+            },
+        }
+        assert config_migrations.apply_all(data) is True
+        entry = data["discord_message_mapping"]["evt-1"]
+        assert entry["pinged"] == {"Alice": "", "Bob": ""}
+
+    def test_legacy_confirmed_field_is_renamed_and_converted(self):
+        # Pre-f438501 configs still have "confirmed" instead of "pinged"
+        data = {
+            "schema_version": 1,
+            "discord_message_mapping": {
+                "evt-1": {
+                    "channel_id": "ch1",
+                    "confirmed": ["Alice"],
+                }
+            },
+        }
+        assert config_migrations.apply_all(data) is True
+        entry = data["discord_message_mapping"]["evt-1"]
+        assert "confirmed" not in entry
+        assert entry["pinged"] == {"Alice": ""}
+
+    def test_already_dict_is_left_alone(self):
+        data = {
+            "schema_version": 1,
+            "discord_message_mapping": {
+                "evt-1": {
+                    "channel_id": "ch1",
+                    "pinged": {"Alice": "msg-123"},
+                }
+            },
+        }
+        config_migrations.apply_all(data)
+        assert data["discord_message_mapping"]["evt-1"]["pinged"] == {
+            "Alice": "msg-123"
+        }
+
+    def test_empty_mapping_is_handled(self):
+        data = {"schema_version": 1, "discord_message_mapping": {}}
+        assert config_migrations.apply_all(data) is True
+        assert data["discord_message_mapping"] == {}
+
+    def test_no_mapping_field_is_handled(self):
+        data = {"schema_version": 1}
+        assert config_migrations.apply_all(data) is True
+        # Just bumps version, doesn't add the field
+        assert "discord_message_mapping" not in data
+
+    def test_unversioned_config_runs_both_migrations(self):
+        data = {
+            "discord_message_mapping": {
+                "evt-1": {"channel_id": "ch1", "pinged": ["Alice"]}
+            }
+        }
+        assert config_migrations.apply_all(data) is True
+        assert data["language"] == "en-UK"
+        assert data["discord_message_mapping"]["evt-1"]["pinged"] == {"Alice": ""}
+        assert data["schema_version"] == config_migrations.CURRENT_SCHEMA_VERSION
+
+    def test_persisted_through_config_load(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "language": "en-UK",
+                    "discord_message_mapping": {
+                        "evt-1": {"channel_id": "ch1", "pinged": ["Alice", "Bob"]}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path)
+        assert cfg.get("schema_version") == config_migrations.CURRENT_SCHEMA_VERSION
+        # Persisted on disk too
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["discord_message_mapping"]["evt-1"]["pinged"] == {
+            "Alice": "",
+            "Bob": "",
+        }

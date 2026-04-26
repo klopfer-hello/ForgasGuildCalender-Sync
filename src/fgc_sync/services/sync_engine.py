@@ -40,6 +40,28 @@ DISCORD_LOOKAHEAD_DAYS = 7  # only post events within this window
 _SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
 
 
+def _coerce_pinged(existing: dict | None) -> dict[str, str]:
+    """Return ``{name: message_id}``, accepting legacy list / ``confirmed`` shapes.
+
+    Pre-v2 configs stored ``pinged`` as ``list[str]`` (and even older ones used
+    ``confirmed``). The v2 migration rewrites these on disk, but adoption-time
+    structures built in this module also pass through here so we tolerate both
+    shapes defensively. Empty-string message ids mean "we know this name was
+    pinged but don't know which message contained it" — they still suppress
+    re-pings but cannot be edited.
+    """
+    if not existing:
+        return {}
+    raw = existing.get("pinged")
+    if raw is None:
+        raw = existing.get("confirmed", [])
+    if isinstance(raw, dict):
+        return {str(k): str(v or "") for k, v in raw.items()}
+    if isinstance(raw, list):
+        return {name: "" for name in raw}
+    return {}
+
+
 def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
     """Return True if another client has newer SavedVariables data on Discord."""
     sv_path = config.saved_variables_path
@@ -354,14 +376,12 @@ def compute_discord_sync_plan(
                         "image_id": remote.get("image_id"),
                         "hash": remote.get("hash"),
                     },
-                    "pinged": [],
+                    "pinged": {},
                 }
 
         channel_id = (existing or {}).get("channel_id")
         msg_ids = (existing or {}).get("message_ids")
-        prev_pinged = set(
-            (existing or {}).get("pinged", (existing or {}).get("confirmed", []))
-        )
+        prev_pinged = _coerce_pinged(existing)
 
         if channel_id is None:
             plan.entries.append(
@@ -381,14 +401,26 @@ def compute_discord_sync_plan(
                 channel_id,
                 set(confirmed_names),
             )
-            prev_pinged = prev_pinged | history_pinged
-            to_ping = set(confirmed_names) - prev_pinged
+            prev_pinged = {**prev_pinged, **history_pinged}
+            confirmed_set = set(confirmed_names)
+            to_ping = confirmed_set - set(prev_pinged.keys())
+            to_remove = {
+                name
+                for name, msg_id in prev_pinged.items()
+                if name not in confirmed_set and msg_id
+            }
 
             old_hash = (msg_ids or {}).get("hash")
+            change_bits: list[str] = []
+            if to_ping:
+                change_bits.append(f"ping {len(to_ping)} new")
+            if to_remove:
+                change_bits.append(f"unping {len(to_remove)}")
+
             if old_hash != content_hash:
                 detail = info
-                if to_ping:
-                    detail += f", ping {len(to_ping)} new"
+                if change_bits:
+                    detail += ", " + ", ".join(change_bits)
                 plan.entries.append(
                     SyncPlanEntry(
                         SyncAction.UPDATE,
@@ -400,7 +432,7 @@ def compute_discord_sync_plan(
                         detail,
                     )
                 )
-            elif to_ping:
+            elif change_bits:
                 plan.entries.append(
                     SyncPlanEntry(
                         SyncAction.UPDATE,
@@ -409,7 +441,7 @@ def compute_discord_sync_plan(
                         evt.date,
                         evt.time_str,
                         evt.type_label,
-                        f"ping {len(to_ping)} new: {', '.join(sorted(to_ping))}",
+                        ", ".join(change_bits),
                     )
                 )
 
@@ -526,16 +558,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                             "image_id": remote.get("image_id"),
                             "hash": remote.get("hash"),
                         },
-                        "pinged": [],
+                        "pinged": {},
                     }
                     log.info("Discord: adopted existing thread for %s", evt.title)
 
             channel_id = (existing or {}).get("channel_id")
             msg_ids = (existing or {}).get("message_ids")
-            # Backward compat: legacy entries used "confirmed" for the full roster
-            prev_pinged = set(
-                (existing or {}).get("pinged", (existing or {}).get("confirmed", []))
-            )
+            prev_pinged = _coerce_pinged(existing)
             is_new_thread = False
 
             if channel_id is None:
@@ -545,7 +574,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     timezone,
                     local_sv_mtime,
                 )
-                prev_pinged = set()
+                prev_pinged = {}
                 is_new_thread = True
                 result.created += 1
             else:
@@ -580,19 +609,35 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     result.updated += 1
 
             # Scan thread history to catch pings from other clients that
-            # are not reflected in our local mapping.
+            # are not reflected in our local mapping. History wins on
+            # conflict so we always have the freshest message id we can
+            # later edit.
             if channel_id and not is_new_thread:
                 history_pinged = discord.get_already_pinged_names(
                     channel_id,
-                    set(confirmed_names),
+                    set(confirmed_names) | set(prev_pinged.keys()),
                 )
-                prev_pinged = prev_pinged | history_pinged
+                prev_pinged = {**prev_pinged, **history_pinged}
+
+            confirmed_set = set(confirmed_names)
+
+            # Strike out @mentions for members who left the roster, before
+            # adding new pings so the same sync cycle can compress one ping
+            # message in place. Discord does not re-notify on edits, so the
+            # other members in the same message are not re-pinged.
+            removals = {
+                name: msg_id
+                for name, msg_id in prev_pinged.items()
+                if name not in confirmed_set and msg_id
+            }
+            if removals and channel_id and not is_new_thread:
+                discord.remove_mentions(channel_id, removals)
 
             # Ping any confirmed members not yet successfully pinged. This
             # also retries members whose Discord account did not exist at
             # the time of the original ping (late server joiners).
-            to_ping = set(confirmed_names) - prev_pinged
-            newly_pinged: set[str] = set()
+            to_ping = confirmed_set - set(prev_pinged.keys())
+            newly_pinged: dict[str, str] = {}
             if to_ping:
                 from fgc_sync.i18n import t as _t
 
@@ -602,13 +647,23 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                     else _t("discord.ping_newly_confirmed")
                 )
                 newly_pinged = discord.ping_members(channel_id, to_ping, label)
-            pinged = prev_pinged | newly_pinged
+
+            # New pinged dict: keep entries still on the roster, drop those
+            # that left (their @mention has been edited away above), then
+            # layer in the freshly-pinged names with their message ids.
+            pinged: dict[str, str] = {
+                name: msg_id
+                for name, msg_id in prev_pinged.items()
+                if name in confirmed_set
+            }
+            pinged.update(newly_pinged)
 
             unchanged = (
                 not is_new_thread
                 and msg_ids
                 and msg_ids.get("hash") == content_hash
                 and not newly_pinged
+                and not removals
             )
             if unchanged:
                 result.skipped += 1
@@ -616,7 +671,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             mapping[event_id] = {
                 "channel_id": channel_id,
                 "message_ids": msg_ids,
-                "pinged": sorted(pinged),
+                "pinged": pinged,
             }
             _evt_elapsed = _time.monotonic() - _evt_start
             if _evt_elapsed > _SLOW_OPERATION_SECONDS:

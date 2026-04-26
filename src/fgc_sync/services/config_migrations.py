@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _migrate_to_v1(data: dict) -> None:
@@ -36,9 +36,38 @@ def _migrate_to_v1(data: dict) -> None:
         data["language"] = "en-UK"
 
 
+def _migrate_to_v2(data: dict) -> None:
+    """v2: turn ``discord_message_mapping[*].pinged`` from ``list[name]`` into
+    ``{name: message_id}``.
+
+    The new shape lets us locate the original ping message when a member is
+    removed from the roster, so we can edit the @mention away (Discord does
+    not re-notify on edits). Pre-v2 entries don't know which message contained
+    each ping, so they migrate with an empty-string sentinel — those names are
+    still treated as already-pinged (no re-ping) but the @mention can't be
+    edited away if they leave; the visual artifact is acceptable for legacy
+    rows. Also folds the even-older ``confirmed`` field into ``pinged`` for
+    configs that never went through the rename in f438501.
+    """
+    mapping = data.get("discord_message_mapping")
+    if not isinstance(mapping, dict):
+        return
+    for entry in mapping.values():
+        if not isinstance(entry, dict):
+            continue
+        if "pinged" not in entry and "confirmed" in entry:
+            entry["pinged"] = entry.pop("confirmed")
+        pinged = entry.get("pinged")
+        if isinstance(pinged, list):
+            entry["pinged"] = {name: "" for name in pinged}
+
+
 # Each entry is (target_version, migration_fn). Applied in order on configs
 # whose stored version is less than target_version.
-_MIGRATIONS: tuple[tuple[int, Callable[[dict], None]], ...] = ((1, _migrate_to_v1),)
+_MIGRATIONS: tuple[tuple[int, Callable[[dict], None]], ...] = (
+    (1, _migrate_to_v1),
+    (2, _migrate_to_v2),
+)
 
 
 def apply_all(data: dict) -> bool:
