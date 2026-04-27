@@ -340,3 +340,325 @@ class TestListCharacterNames:
         }
         names = list_character_names(db)
         assert names == ["Char"]
+
+
+# --- v2 (packed positional) layout ---
+
+
+def _v2_event(
+    event_id="evt-1",
+    type_="raid",
+    raid="gruul",
+    title="Gruul mit Forga",
+    comment="Bring flasks",
+    creator="Forga",
+    server_time_minutes=1185,
+    revision=3,
+    participants=None,
+    roster=None,
+):
+    """Build a v2 packed event as slpp would decode it (1-based dict)."""
+    return {
+        1: event_id,
+        2: type_,
+        3: raid,
+        4: title,
+        5: comment,
+        6: creator,
+        7: server_time_minutes,
+        8: revision,
+        9: 1777000000,  # updatedAt
+        10: creator,  # updatedBy
+        11: participants or {},
+        12: {},  # reservesByPlayer
+        13: roster or {},
+    }
+
+
+def _v2_participant(
+    attendance=1,
+    class_code="WARRIOR",
+    role_code="TANK",
+    spec_index=1,
+    item_level=118.0,
+    comment="",
+):
+    """Build a v2 packed participant (dict form, 1-based)."""
+    return {
+        1: attendance,
+        2: class_code,
+        3: role_code,
+        4: spec_index,
+        5: item_level,
+        6: comment,
+        7: 1777000000,
+        8: 1,
+        9: 1777000000,
+        10: "Forga",
+    }
+
+
+def _v2_roster(group=1, slot=1):
+    return {1: group, 2: slot, 3: 1, 4: 1777000000, 5: "Forga"}
+
+
+_V2_DB = {
+    "profiles": {
+        "Default": {
+            "guildScoped": {
+                "Thunderstrike-V2Guild": {
+                    "_fgcEventStorageVersion": 2,
+                    "events": {
+                        "2026-05-15": [
+                            _v2_event(
+                                event_id="v2-evt-1",
+                                title="TK mit Forga",
+                                raid="tk",
+                                comment="Consumables Pflicht",
+                                server_time_minutes=1185,
+                                revision=23,
+                                participants={
+                                    "Alice": _v2_participant(
+                                        attendance=2,
+                                        class_code="WARRIOR",
+                                        role_code="TANK",
+                                        item_level=118.5,
+                                        comment="MT",
+                                    ),
+                                    "Bob": _v2_participant(
+                                        attendance=1,
+                                        class_code="MAGE",
+                                        role_code="DAMAGER",
+                                        item_level=115.0,
+                                    ),
+                                    "Carol": _v2_participant(
+                                        attendance=3,  # DECLINED
+                                        class_code="PRIEST",
+                                        role_code="HEALER",
+                                    ),
+                                },
+                                roster={
+                                    "Alice": _v2_roster(group=1, slot=1),
+                                    "Bob": _v2_roster(group=2, slot=3),
+                                    # Carol declined → no roster entry
+                                },
+                            ),
+                        ],
+                    },
+                    "sync": {
+                        "deletedEvents": {
+                            "v2-evt-deleted": {
+                                "revision": 5,
+                                "updatedBy": "Forga",
+                                "updatedAt": 1777000000,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+    "profileKeys": {
+        "Forga - Thunderstrike": "Default",
+    },
+}
+
+
+class TestV2ExtractEvents:
+    def test_extracts_v2_event(self):
+        events = extract_events(_V2_DB, "Thunderstrike-V2Guild")
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.event_id == "v2-evt-1"
+        assert evt.title == "TK mit Forga"
+        assert evt.event_type == "raid"
+        assert evt.raid == "tk"
+        assert evt.date == "2026-05-15"
+        assert evt.server_hour == 19
+        assert evt.server_minute == 45
+        assert evt.comment == "Consumables Pflicht"
+        assert evt.creator == "Forga"
+        assert evt.revision == 23
+
+    def test_v2_participants_merged_with_roster(self):
+        events = extract_events(_V2_DB, "Thunderstrike-V2Guild")
+        evt = events[0]
+        assert len(evt.participants) == 3
+
+        alice = next(p for p in evt.participants if p.name == "Alice")
+        assert alice.attendance == Attendance.CONFIRMED
+        assert alice.class_code == "WARRIOR"
+        assert alice.role_code == "TANK"
+        assert alice.item_level == 118.5
+        assert alice.comment == "MT"
+        assert alice.group == 1
+        assert alice.slot == 1
+
+        bob = next(p for p in evt.participants if p.name == "Bob")
+        assert bob.attendance == Attendance.SIGNED
+        assert bob.group == 2
+        assert bob.slot == 3
+
+        carol = next(p for p in evt.participants if p.name == "Carol")
+        assert carol.attendance == Attendance.DECLINED
+        # No roster entry → defaults to 0
+        assert carol.group == 0
+        assert carol.slot == 0
+
+    def test_v2_event_as_list_form(self):
+        """slpp may decode pure 1..n positional tables as Python lists."""
+        list_form_event = [
+            "v2-list-evt",
+            "raid",
+            "kara",
+            "Karazhan",
+            "",
+            "Forga",
+            1200,  # 20:00
+            1,
+            1777000000,
+            "Forga",
+            {},  # participants
+            {},  # reserves
+            {},  # roster
+        ]
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": {"2026-04-10": [list_form_event]},
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert len(events) == 1
+        assert events[0].event_id == "v2-list-evt"
+        assert events[0].server_hour == 20
+        assert events[0].server_minute == 0
+
+    def test_v2_get_deleted_event_ids(self):
+        ids = get_deleted_event_ids(_V2_DB, "Thunderstrike-V2Guild")
+        assert ids == {"v2-evt-deleted"}
+
+    def test_v2_list_guild_keys(self):
+        keys = list_guild_keys(_V2_DB)
+        assert keys == ["Thunderstrike-V2Guild"]
+
+    def test_v2_skips_event_without_id(self):
+        bad_event = _v2_event(event_id=None)
+        good_event = _v2_event(event_id="ok")
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": {"2026-04-10": [bad_event, good_event]},
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert len(events) == 1
+        assert events[0].event_id == "ok"
+
+    def test_v2_missing_title_falls_back(self):
+        evt = _v2_event(title=None)
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": {"2026-04-10": [evt]},
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert events[0].title == "Untitled"
+
+
+class TestVersionDispatch:
+    def test_v1_used_when_version_missing(self):
+        """A guild without _fgcEventStorageVersion dispatches to v1 (named keys)."""
+        events = extract_events(_MINIMAL_DB, "Thunderstrike-TestGuild")
+        assert len(events) == 2
+        assert {e.event_id for e in events} == {"evt-1", "evt-2"}
+
+    def test_v1_used_when_version_is_1(self):
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 1,
+                            "events": {
+                                "2026-04-10": [
+                                    {
+                                        "eventId": "v1-evt",
+                                        "title": "T",
+                                        "type": "raid",
+                                        "serverTimeMinutes": 600,
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert events[0].event_id == "v1-evt"
+
+    def test_per_guild_dispatch(self):
+        """One DB can hold a v1 guild and a v2 guild simultaneously."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "GuildV1": {
+                            "events": {
+                                "2026-04-10": [
+                                    {
+                                        "eventId": "v1-evt",
+                                        "title": "T1",
+                                        "serverTimeMinutes": 0,
+                                    },
+                                ],
+                            },
+                        },
+                        "GuildV2": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": {
+                                "2026-04-10": [
+                                    _v2_event(event_id="v2-evt", title="T2"),
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        v1_events = extract_events(db, "GuildV1")
+        v2_events = extract_events(db, "GuildV2")
+        assert v1_events[0].event_id == "v1-evt"
+        assert v2_events[0].event_id == "v2-evt"
+
+
+class TestParseSavedVariablesFGC2Prefix:
+    def test_fgc2_db_prefix_accepted(self, tmp_path):
+        """Test fixture uses FGC2_DB while production uses FGC_DB."""
+        sv = tmp_path / "ForgasGuildCalendar2Test.lua"
+        sv.write_text(
+            'FGC2_DB = {\n  ["profileKeys"] = {\n    ["Test - Realm"] = true,\n  },\n}\n',
+            encoding="utf-8",
+        )
+        db = parse_saved_variables(sv)
+        assert "profileKeys" in db
