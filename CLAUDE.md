@@ -17,6 +17,7 @@ System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/e
 - SavedVariables: `WTF/Account/<id>/SavedVariables/ForgasGuildCalendar.lua`
 - Global variable: `FGC_DB`
 - Event path: `FGC_DB.profiles[profile].guildScoped[guildKey].events["YYYY-MM-DD"][]`
+- Storage layout: per-guild `_fgcEventStorageVersion` selects the reader. v1 = named-keys events; v2 (FGC2) = packed positional arrays with `group`/`slot` merged from a separate `rosterByPlayer` table at `event[13]`. The `lua_parser` façade dispatches to `lua_parser_v1` / `lua_parser_v2` so a single SavedVariables file can mix layouts.
 - Time: always use `serverTimeMinutes` (minutes from midnight), not `serverHour`/`serverMinute`
 - Timezone: EU Thunderstrike = `Europe/Berlin`
 - Characters: auto-detected from `FGC_DB.profileKeys` (format `"Name - Realm"`)
