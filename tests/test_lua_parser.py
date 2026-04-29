@@ -585,37 +585,12 @@ class TestV2ExtractEvents:
         assert events[0].title == "Untitled"
 
 
-class TestVersionDispatch:
-    def test_v1_used_when_version_missing(self):
-        """A guild without _fgcEventStorageVersion dispatches to v1 (named keys)."""
+class TestLayoutDispatch:
+    def test_v1_used_for_named_keys_events(self):
+        """A guild with named-keys events dispatches to v1."""
         events = extract_events(_MINIMAL_DB, "Thunderstrike-TestGuild")
         assert len(events) == 2
         assert {e.event_id for e in events} == {"evt-1", "evt-2"}
-
-    def test_v1_used_when_version_is_1(self):
-        db = {
-            "profiles": {
-                "Default": {
-                    "guildScoped": {
-                        "G": {
-                            "_fgcEventStorageVersion": 1,
-                            "events": {
-                                "2026-04-10": [
-                                    {
-                                        "eventId": "v1-evt",
-                                        "title": "T",
-                                        "type": "raid",
-                                        "serverTimeMinutes": 600,
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                },
-            },
-        }
-        events = extract_events(db, "G")
-        assert events[0].event_id == "v1-evt"
 
     def test_per_guild_dispatch(self):
         """One DB can hold a v1 guild and a v2 guild simultaneously."""
@@ -650,6 +625,82 @@ class TestVersionDispatch:
         v2_events = extract_events(db, "GuildV2")
         assert v1_events[0].event_id == "v1-evt"
         assert v2_events[0].event_id == "v2-evt"
+
+    def test_named_keys_events_with_version_flag_set_to_2(self):
+        """Regression: FGC2 rollout has been observed setting
+        ``_fgcEventStorageVersion`` to 2 while still writing events in
+        named-keys form. Detection must follow the on-disk event shape, not
+        the version flag — otherwise the v2 reader silently drops everything.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 2,  # flag claims v2
+                            "events": {
+                                "2026-05-01": [
+                                    {  # but events are named-keys
+                                        "eventId": "kara-forga",
+                                        "title": "Kara mit Forga",
+                                        "type": "raid",
+                                        "raid": "karazhan",
+                                        "serverTimeMinutes": 1185,
+                                        "comment": "",
+                                        "creator": "Forga",
+                                        "revision": 5,
+                                        "participants": {
+                                            "Klopfbernd": {
+                                                "attendance": 2,
+                                                "classCode": "SHAMAN",
+                                                "roleCode": "DAMAGER",
+                                                "group": 1,
+                                                "slot": 5,
+                                                "itemLevel": 116.0,
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.event_id == "kara-forga"
+        assert evt.title == "Kara mit Forga"
+        # group/slot must come through inline (v1 layout), not be dropped
+        p = evt.participants[0]
+        assert p.name == "Klopfbernd"
+        assert p.group == 1
+        assert p.slot == 5
+
+    def test_packed_events_without_version_flag(self):
+        """Symmetric case: packed positional events with no version flag set
+        still dispatch to v2 based on event shape alone.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            # no _fgcEventStorageVersion key
+                            "events": {
+                                "2026-04-10": [
+                                    _v2_event(event_id="packed", title="T"),
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert len(events) == 1
+        assert events[0].event_id == "packed"
 
 
 class TestParseSavedVariablesFGC2Prefix:

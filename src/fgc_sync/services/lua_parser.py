@@ -5,9 +5,13 @@ Façade that exposes a stable API on top of two storage layouts:
 * **v1** — named-keys (``event.eventId``, ``event.title``, …)
 * **v2** — packed positional arrays plus a separate ``rosterByPlayer`` table
 
-Dispatch is per-guild based on ``_fgcEventStorageVersion`` in the guild scope.
-Top-level shape (``profileKeys``, ``profiles``, ``sync.deletedEvents``) is
-identical across versions, so only :func:`extract_events` branches.
+Dispatch is **per-guild, content-based**: the first parseable event in the
+guild's events table is sniffed to decide the layout. The
+``_fgcEventStorageVersion`` flag is intentionally *not* used — during the FGC2
+rollout the addon has been observed setting that flag to ``2`` while still
+writing events in named-keys form, so the on-disk shape is the only reliable
+signal. Top-level shape (``profileKeys``, ``profiles``, ``sync.deletedEvents``)
+is identical across versions, so only :func:`extract_events` branches.
 """
 
 from __future__ import annotations
@@ -33,26 +37,48 @@ def parse_saved_variables(file_path: Path) -> dict:
     return lua.decode(text[match.end() :])
 
 
-def _storage_version(db: dict, guild_key: str, profile: str) -> int:
-    guild_scope = (
+def _detect_layout(db: dict, guild_key: str, profile: str) -> str:
+    """Return ``"v1"`` (named-keys) or ``"v2"`` (packed positional).
+
+    Sniffs the first parseable event in the guild's events table:
+
+    * Lua list / Python list → packed positional (v2)
+    * dict containing ``"eventId"`` → named-keys (v1)
+    * dict containing integer key ``1`` and no ``"eventId"`` → packed (v2)
+
+    Defaults to v1 when nothing parseable is found — v1 is also the safe
+    fallback when the events table is empty.
+    """
+    events_by_date = (
         db.get("profiles", {})
         .get(profile, {})
         .get("guildScoped", {})
         .get(guild_key, {})
+        .get("events", {})
     )
-    if not isinstance(guild_scope, dict):
-        return 1
-    try:
-        return int(guild_scope.get("_fgcEventStorageVersion", 1) or 1)
-    except (ValueError, TypeError):
-        return 1
+    if not isinstance(events_by_date, dict):
+        return "v1"
+
+    for events in events_by_date.values():
+        if not isinstance(events, (list, dict)):
+            continue
+        event_list = events.values() if isinstance(events, dict) else events
+        for evt in event_list:
+            if isinstance(evt, list):
+                return "v2"
+            if isinstance(evt, dict):
+                if "eventId" in evt:
+                    return "v1"
+                if 1 in evt:
+                    return "v2"
+    return "v1"
 
 
 def extract_events(
     db: dict, guild_key: str, profile: str = "Default"
 ) -> list[CalendarEvent]:
     """Extract calendar events for a guild from parsed FGC_DB."""
-    if _storage_version(db, guild_key, profile) >= 2:
+    if _detect_layout(db, guild_key, profile) == "v2":
         return lua_parser_v2.extract_events(db, guild_key, profile)
     return lua_parser_v1.extract_events(db, guild_key, profile)
 
