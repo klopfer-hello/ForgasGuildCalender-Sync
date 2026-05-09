@@ -17,7 +17,7 @@ System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/e
 - SavedVariables: `WTF/Account/<id>/SavedVariables/ForgasGuildCalendar.lua`
 - Global variable: `FGC_DB`
 - Event path: `FGC_DB.profiles[profile].guildScoped[guildKey].events["YYYY-MM-DD"][]`
-- Storage layout: per-guild `_fgcEventStorageVersion` selects the reader. v1 = named-keys events; v2 (FGC2) = packed positional arrays with `group`/`slot` merged from a separate `rosterByPlayer` table at `event[13]`. The `lua_parser` façade dispatches to `lua_parser_v1` / `lua_parser_v2` so a single SavedVariables file can mix layouts.
+- Storage layout: three on-disk shapes, dispatched by event-shape sniffing (the `_fgcEventStorageVersion` flag is unreliable — the addon has been observed setting it to `2` while writing v1- or v3-shaped events). v1 = named-keys events with `group`/`slot` inline on each participant; v2 (FGC2) = packed positional arrays with `group`/`slot` merged from a separate `rosterByPlayer` table at `event[13]`; v3 = named-keys events with the roster externalized into `event["roster"]["byPlayer"]` (named keys, not positional). The addon's `V3|` prefix on `profiles[].guildScoped` keys is the companion namespace bump for v3 and is consulted as a fallback hint only when the events table is empty. The `lua_parser` façade dispatches to `lua_parser_v1` / `lua_parser_v2` / `lua_parser_v3` so a single SavedVariables file can mix layouts.
 - Time: always use `serverTimeMinutes` (minutes from midnight), not `serverHour`/`serverMinute`
 - Timezone: EU Thunderstrike = `Europe/Berlin`
 - Characters: auto-detected from `FGC_DB.profileKeys` (format `"Name - Realm"`)

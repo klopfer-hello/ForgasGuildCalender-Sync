@@ -4,6 +4,7 @@ import pytest
 
 from fgc_sync.models.enums import Attendance
 from fgc_sync.services.lua_parser import (
+    _detect_layout,
     extract_events,
     get_deleted_event_ids,
     list_character_names,
@@ -679,11 +680,10 @@ class TestLayoutDispatch:
         assert p.slot == 5
 
     def test_named_keys_event_with_external_roster_by_player(self):
-        """Hybrid layout: named-keys event whose group/slot live in
+        """V3 layout: named-keys event whose group/slot live in
         ``event.roster.byPlayer[name]`` instead of inline on each participant.
-        Recent addon builds write this shape; the v1 reader must merge the
-        two so Discord's ``has_roster`` check (group > 0 + Confirmed) sees the
-        confirmed roster.
+        Detection must pick v3, and group/slot must come through so Discord's
+        ``has_roster`` filter (group > 0 + Confirmed) sees the confirmed roster.
         """
         db = {
             "profiles": {
@@ -828,6 +828,113 @@ class TestLayoutDispatch:
         events = extract_events(db, "G")
         assert len(events) == 1
         assert events[0].event_id == "packed"
+
+    def test_detect_layout_v1_inline(self):
+        """A named-keys event without an external roster.byPlayer dispatches v1."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "events": {
+                                "2026-05-01": [
+                                    {"eventId": "e", "serverTimeMinutes": 0},
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "G", "Default") == "v1"
+
+    def test_detect_layout_v3_external_roster(self):
+        """A named-keys event with a populated roster.byPlayer dispatches v3."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "events": {
+                                "2026-05-01": [
+                                    {
+                                        "eventId": "e",
+                                        "serverTimeMinutes": 0,
+                                        "roster": {"byPlayer": {}},
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "G", "Default") == "v3"
+
+    def test_detect_layout_v2_packed(self):
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "events": {
+                                "2026-05-01": [_v2_event(event_id="e", title="T")],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "G", "Default") == "v2"
+
+    def test_detect_layout_empty_events_falls_back_to_v3_prefix(self):
+        """Empty events table + V3| guild-key prefix → v3 fallback hint.
+
+        The addon prefixes guild-scope keys with V3| in the same release that
+        externalized roster.byPlayer; with no event to sniff, the prefix is the
+        only signal we have.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V3|Realm-Guild": {"events": {}},
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "V3|Realm-Guild", "Default") == "v3"
+
+    def test_detect_layout_empty_events_no_prefix_defaults_v1(self):
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "Realm-Guild": {"events": {}},
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "Realm-Guild", "Default") == "v1"
+
+    def test_v3_prefix_with_packed_events_still_dispatches_v2(self):
+        """Shape detection wins over the prefix hint: a V3| guild that
+        somehow holds packed positional events still routes to v2.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V3|Realm-Guild": {
+                            "events": {
+                                "2026-05-01": [_v2_event(event_id="e", title="T")],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "V3|Realm-Guild", "Default") == "v2"
 
 
 class TestParseSavedVariablesFGC2Prefix:

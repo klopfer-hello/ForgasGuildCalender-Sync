@@ -1,9 +1,23 @@
-"""V1 (named-keys, inline roster) reader for FGC_DB events.
+"""V3 (named-keys event with externalized named-keys roster) reader for FGC_DB.
 
-Each event is a dict with explicit field names (``eventId``, ``title``, ...) and
-participants live in ``event.participants[name]`` with named keys including
-``group`` and ``slot`` inline. The earliest on-disk shape; superseded by v2
-(packed positional) and v3 (named keys with externalized ``roster.byPlayer``).
+Each event is a dict with explicit field names — same as v1 — but ``group`` and
+``slot`` no longer live inline on each participant. They're stored in a separate
+``event.roster.byPlayer[name]`` table, also using named keys::
+
+    event["roster"]["byPlayer"]["Grayfill"] = {
+        "group": 1,
+        "slot": 1,
+        "revision": 5,
+        "updatedBy": "Grayfill",
+        "updatedAt": ...,
+    }
+
+This is the addon's third on-disk shape: encoding stayed named-keys (unlike v2
+which switched to packed positional), but the roster table got hoisted out for
+the same dedup/sync reasons FGC2 introduced. The companion ``V3|`` prefix on
+``profiles[].guildScoped`` keys is the addon's external signal that this layout
+is in effect; the façade falls back to the prefix only when the events table is
+empty (shape detection wins otherwise).
 """
 
 from __future__ import annotations
@@ -33,7 +47,16 @@ def extract_events(
             if not isinstance(evt, dict) or "eventId" not in evt:
                 continue
 
-            participants = _parse_participants(evt.get("participants", {}))
+            roster_raw = evt.get("roster", {})
+            roster_by_player = (
+                roster_raw.get("byPlayer", {}) if isinstance(roster_raw, dict) else {}
+            )
+            if not isinstance(roster_by_player, dict):
+                roster_by_player = {}
+
+            participants = _parse_participants(
+                evt.get("participants", {}), roster_by_player
+            )
             hour, minute = _parse_time(evt)
 
             result.append(
@@ -55,7 +78,7 @@ def extract_events(
     return result
 
 
-def _parse_participants(raw: dict) -> list[Participant]:
+def _parse_participants(raw: dict, roster_by_player: dict) -> list[Participant]:
     if not isinstance(raw, dict):
         return []
     participants = []
@@ -67,6 +90,15 @@ def _parse_participants(raw: dict) -> list[Participant]:
             attendance = Attendance(att_value)
         except ValueError:
             attendance = Attendance.DECLINED
+
+        rentry = roster_by_player.get(name)
+        if isinstance(rentry, dict):
+            group = int(rentry.get("group", 0) or 0)
+            slot = int(rentry.get("slot", 0) or 0)
+        else:
+            group = 0
+            slot = 0
+
         participants.append(
             Participant(
                 name=name,
@@ -74,8 +106,8 @@ def _parse_participants(raw: dict) -> list[Participant]:
                 class_code=pdata.get("classCode", ""),
                 role_code=pdata.get("roleCode", ""),
                 comment=pdata.get("comment", ""),
-                group=int(pdata.get("group", 0)),
-                slot=int(pdata.get("slot", 0)),
+                group=group,
+                slot=slot,
                 item_level=float(pdata.get("itemLevel", 0)),
             )
         )
