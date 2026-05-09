@@ -401,3 +401,45 @@ class TestPingedDictMigration:
             "Alice": "",
             "Bob": "",
         }
+
+
+class TestGuildKeyNamespaceMigration:
+    """v3: bare guild_key gains the V3| prefix the addon now namespaces with."""
+
+    def test_bare_key_is_prefixed(self):
+        data = {"schema_version": 2, "guild_key": "Thunderstrike-Thunderwipe"}
+        assert config_migrations.apply_all(data) is True
+        assert data["guild_key"] == "V3|Thunderstrike-Thunderwipe"
+
+    def test_already_namespaced_key_is_left_alone(self):
+        data = {"schema_version": 2, "guild_key": "V3|Thunderstrike-Thunderwipe"}
+        config_migrations.apply_all(data)
+        assert data["guild_key"] == "V3|Thunderstrike-Thunderwipe"
+
+    def test_future_namespace_is_left_alone(self):
+        data = {"schema_version": 2, "guild_key": "V4|Thunderstrike-Thunderwipe"}
+        config_migrations.apply_all(data)
+        assert data["guild_key"] == "V4|Thunderstrike-Thunderwipe"
+
+    def test_missing_guild_key_is_handled(self):
+        data = {"schema_version": 2}
+        assert config_migrations.apply_all(data) is True
+        assert "guild_key" not in data
+
+    def test_empty_guild_key_is_left_alone(self):
+        data = {"schema_version": 2, "guild_key": ""}
+        config_migrations.apply_all(data)
+        assert data["guild_key"] == ""
+
+    def test_idempotent_on_repeat_apply(self):
+        data = {"schema_version": 2, "guild_key": "Foo-Bar"}
+        config_migrations.apply_all(data)
+        config_migrations.apply_all(data)
+        assert data["guild_key"] == "V3|Foo-Bar"
+
+    def test_unversioned_config_runs_all_three_migrations(self):
+        data = {"guild_key": "Foo-Bar"}
+        assert config_migrations.apply_all(data) is True
+        assert data["language"] == "en-UK"
+        assert data["guild_key"] == "V3|Foo-Bar"
+        assert data["schema_version"] == config_migrations.CURRENT_SCHEMA_VERSION

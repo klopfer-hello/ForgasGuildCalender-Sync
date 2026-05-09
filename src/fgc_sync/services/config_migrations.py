@@ -20,9 +20,10 @@ are treated as version 0, so every migration runs.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def _migrate_to_v1(data: dict) -> None:
@@ -62,11 +63,32 @@ def _migrate_to_v2(data: dict) -> None:
             entry["pinged"] = {name: "" for name in pinged}
 
 
+_GUILD_KEY_NAMESPACE_PATTERN = re.compile(r"^V\d+\|")
+
+
+def _migrate_to_v3(data: dict) -> None:
+    """v3: prepend the ``V3|`` namespace to ``guild_key``.
+
+    The addon update namespaced ``FGC_DB.profiles[].guildScoped`` keys with
+    a ``V3|`` prefix (e.g. ``Thunderstrike-Foo`` → ``V3|Thunderstrike-Foo``).
+    Pre-v3 configs store the bare scope, so the parser lookup misses and
+    sync silently produces zero events. Idempotent: any value already
+    namespaced with ``V<n>|`` is left alone.
+    """
+    guild_key = data.get("guild_key")
+    if not isinstance(guild_key, str) or not guild_key:
+        return
+    if _GUILD_KEY_NAMESPACE_PATTERN.match(guild_key):
+        return
+    data["guild_key"] = "V3|" + guild_key
+
+
 # Each entry is (target_version, migration_fn). Applied in order on configs
 # whose stored version is less than target_version.
 _MIGRATIONS: tuple[tuple[int, Callable[[dict], None]], ...] = (
     (1, _migrate_to_v1),
     (2, _migrate_to_v2),
+    (3, _migrate_to_v3),
 )
 
 
