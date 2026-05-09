@@ -1,8 +1,9 @@
 """V1 (named-keys) reader for FGC_DB events.
 
-Each event is a dict with explicit field names (``eventId``, ``title``, ...) and
-participants live in ``event.participants[name]`` with named keys including
-``group`` and ``slot`` inline.
+Each event is a dict with explicit field names (``eventId``, ``title``, ...).
+Group/slot are read from ``event.roster.byPlayer[name]`` when present
+(hybrid layout written by recent addon builds) and otherwise fall back to
+``event.participants[name]`` inline.
 """
 
 from __future__ import annotations
@@ -32,7 +33,16 @@ def extract_events(
             if not isinstance(evt, dict) or "eventId" not in evt:
                 continue
 
-            participants = _parse_participants(evt.get("participants", {}))
+            roster_raw = evt.get("roster", {})
+            roster_by_player = (
+                roster_raw.get("byPlayer", {}) if isinstance(roster_raw, dict) else {}
+            )
+            if not isinstance(roster_by_player, dict):
+                roster_by_player = {}
+
+            participants = _parse_participants(
+                evt.get("participants", {}), roster_by_player
+            )
             hour, minute = _parse_time(evt)
 
             result.append(
@@ -54,7 +64,7 @@ def extract_events(
     return result
 
 
-def _parse_participants(raw: dict) -> list[Participant]:
+def _parse_participants(raw: dict, roster_by_player: dict) -> list[Participant]:
     if not isinstance(raw, dict):
         return []
     participants = []
@@ -66,6 +76,15 @@ def _parse_participants(raw: dict) -> list[Participant]:
             attendance = Attendance(att_value)
         except ValueError:
             attendance = Attendance.DECLINED
+
+        rentry = roster_by_player.get(name)
+        if isinstance(rentry, dict):
+            group = int(rentry.get("group", 0) or 0)
+            slot = int(rentry.get("slot", 0) or 0)
+        else:
+            group = int(pdata.get("group", 0) or 0)
+            slot = int(pdata.get("slot", 0) or 0)
+
         participants.append(
             Participant(
                 name=name,
@@ -73,8 +92,8 @@ def _parse_participants(raw: dict) -> list[Participant]:
                 class_code=pdata.get("classCode", ""),
                 role_code=pdata.get("roleCode", ""),
                 comment=pdata.get("comment", ""),
-                group=int(pdata.get("group", 0)),
-                slot=int(pdata.get("slot", 0)),
+                group=group,
+                slot=slot,
                 item_level=float(pdata.get("itemLevel", 0)),
             )
         )

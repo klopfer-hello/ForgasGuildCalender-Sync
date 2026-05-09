@@ -678,6 +678,133 @@ class TestLayoutDispatch:
         assert p.group == 1
         assert p.slot == 5
 
+    def test_named_keys_event_with_external_roster_by_player(self):
+        """Hybrid layout: named-keys event whose group/slot live in
+        ``event.roster.byPlayer[name]`` instead of inline on each participant.
+        Recent addon builds write this shape; the v1 reader must merge the
+        two so Discord's ``has_roster`` check (group > 0 + Confirmed) sees the
+        confirmed roster.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": {
+                                "2026-05-15": [
+                                    {
+                                        "eventId": "ssc-totemmichl",
+                                        "title": "SSC mit Totemmichl",
+                                        "type": "raid",
+                                        "raid": "ssc",
+                                        "serverTimeMinutes": 1170,
+                                        "creator": "Totemmichl",
+                                        "revision": 12,
+                                        "roster": {
+                                            "byPlayer": {
+                                                "Grayfill": {
+                                                    "group": 1,
+                                                    "slot": 1,
+                                                    "revision": 5,
+                                                    "updatedBy": "Grayfill",
+                                                    "updatedAt": 1778258695,
+                                                },
+                                                "Erees": {
+                                                    "group": 3,
+                                                    "slot": 2,
+                                                },
+                                            },
+                                        },
+                                        "participants": {
+                                            "Grayfill": {
+                                                "attendance": 2,
+                                                "classCode": "WARRIOR",
+                                                "roleCode": "TANK",
+                                                "itemLevel": 118.0,
+                                            },
+                                            "Erees": {
+                                                "attendance": 2,
+                                                "classCode": "DRUID",
+                                                "roleCode": "DAMAGER",
+                                                "itemLevel": 116.25,
+                                            },
+                                            "Bench": {
+                                                "attendance": 1,
+                                                "classCode": "MAGE",
+                                                "roleCode": "DAMAGER",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.event_id == "ssc-totemmichl"
+
+        grayfill = next(p for p in evt.participants if p.name == "Grayfill")
+        assert grayfill.attendance == Attendance.CONFIRMED
+        assert grayfill.group == 1
+        assert grayfill.slot == 1
+        assert grayfill.class_code == "WARRIOR"
+
+        erees = next(p for p in evt.participants if p.name == "Erees")
+        assert erees.group == 3
+        assert erees.slot == 2
+
+        bench = next(p for p in evt.participants if p.name == "Bench")
+        assert bench.attendance == Attendance.SIGNED
+        assert bench.group == 0
+        assert bench.slot == 0
+
+        # Discord's has_roster check must see the confirmed roster.
+        assert any(
+            p.group > 0 and p.attendance == Attendance.CONFIRMED
+            for p in evt.participants
+        )
+
+    def test_named_keys_event_inline_group_still_works(self):
+        """Backwards compat: pre-hybrid v1 events with inline group/slot and
+        no ``roster.byPlayer`` table must continue to parse correctly.
+        """
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "G": {
+                            "events": {
+                                "2026-05-15": [
+                                    {
+                                        "eventId": "legacy-evt",
+                                        "title": "Legacy",
+                                        "serverTimeMinutes": 1200,
+                                        "participants": {
+                                            "Alice": {
+                                                "attendance": 2,
+                                                "classCode": "WARRIOR",
+                                                "group": 4,
+                                                "slot": 2,
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "G")
+        alice = events[0].participants[0]
+        assert alice.group == 4
+        assert alice.slot == 2
+
     def test_packed_events_without_version_flag(self):
         """Symmetric case: packed positional events with no version flag set
         still dispatch to v2 based on event shape alone.
