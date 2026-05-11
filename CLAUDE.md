@@ -218,8 +218,10 @@ Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `W
 - **Stale-data guard** identical to per-event sync (`_is_local_data_stale`)
 - **No roster filter, no 7-day lookahead**: every guild event in the current ISO week (Mon–Sun) is included regardless of participation status (unlike per-event threads)
 - **Thread name is constant**: only the starter message + image are PATCHed in place; the thread is never recreated per week
+- **PATCH target is always `channel_id`**: by Discord's forum-channel invariant the starter-message id equals the thread id, so the sync ignores any stored `message_id` and always targets the starter. This makes second-client adoption and stale-mapping recovery converge on a single message instead of posting a reply
 - **Cross-language adoption**: when no thread is in mapping, iterate `candidate_weekly_thread_names()` so an old-language thread is adopted instead of duplicated
-- Skip when `{hash, week_key}` are both unchanged
+- **Orphan cleanup**: after each successful sync, `cleanup_weekly_thread_orphans` scans up to 100 messages and deletes any non-starter message carrying a `weekly_*.png` attachment — residue from clients that previously posted the image as a reply. Requires Manage Messages on the forum if the orphan was authored by a different bot user; messages the bot itself authored are deletable without it
+- Skip when mapping already points at the starter *and* `{hash, week_key}` are both unchanged — a mismatched `message_id` always triggers a fresh PATCH so the starter wins
 
 ### Image (`weekly_overview.py` → `render_weekly_overview`)
 
@@ -436,7 +438,9 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 ### Weekly Overview
 
 - Thread name comes from `get_weekly_thread_name()` (active-language) — don't change it per week; only the starter message content and image change
+- The PATCH target is always `channel_id`, never `mapping["message_id"]`. Discord guarantees that the starter-message id of a forum thread equals the thread id, so trust the invariant — a stored `message_id` that differs is a sign of a buggy past run and must not be honoured, or two clients will diverge on different messages
 - When adopting an existing thread, iterate `candidate_weekly_thread_names()` so a language switch picks up an old-language thread instead of creating a new one
+- After every sync, call `cleanup_weekly_thread_orphans(channel_id)` so non-starter weekly images posted by past buggy clients are removed. The filter must require both `id != channel_id` *and* an attachment matching `weekly_*.png` so user messages and per-event roster images stay untouched
 - Both `execute_weekly_sync` and `compute_weekly_sync_plan` must respect the stale-data guard (`_is_local_data_stale`)
 - `compute_weekly_hash` must cover every field the image displays, so content changes always trigger a PATCH. Translated labels are *not* part of the hash — image content depends on language but adopting the existing thread + PATCHing avoids churn
 - `render_weekly_overview` must handle fractional `WEEKLY_EVENT_DURATION_HOURS` (e.g. 2.5) — coerce to int where values flow to canvas dimensions

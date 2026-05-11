@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://discord.com/api/v10"
 
 _FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
+_WEEKLY_FILENAME_PATTERN = re.compile(r"weekly_.+\.png")
 
 # Short raid names for thread titles
 RAID_SHORT_NAMES: dict[str, str] = {
@@ -372,6 +373,50 @@ class DiscordPoster:
             filename,
             content,
         )
+
+    def cleanup_weekly_thread_orphans(self, channel_id: str) -> int:
+        """Delete leftover weekly-overview reply messages in *channel_id*.
+
+        The weekly thread is meant to hold exactly one message — its starter,
+        whose id equals the thread id. Older buggy clients sometimes posted
+        the weekly image as a reply, leaving duplicate messages behind. This
+        scans up to 100 recent messages and deletes any that carry a
+        ``weekly_*.png`` attachment *and* whose message id differs from the
+        thread id. Returns the number of messages deleted.
+        """
+        try:
+            messages = self._request(
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+        except requests.HTTPError:
+            return 0
+
+        removed = 0
+        for msg in messages or []:
+            msg_id = msg.get("id")
+            if not msg_id or msg_id == channel_id:
+                continue
+            has_weekly_image = any(
+                _WEEKLY_FILENAME_PATTERN.match(att.get("filename", ""))
+                for att in msg.get("attachments", [])
+            )
+            if not has_weekly_image:
+                continue
+            try:
+                self._request("DELETE", f"/channels/{channel_id}/messages/{msg_id}")
+                removed += 1
+                log.info(
+                    "Discord: deleted orphan weekly reply %s in thread %s",
+                    msg_id,
+                    channel_id,
+                )
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    continue
+                log.warning("Discord: failed to delete orphan %s: %s", msg_id, e)
+        return removed
 
     def get_max_remote_sv_mtime(self) -> int:
         """Scan the last few messages of every forum thread and return the

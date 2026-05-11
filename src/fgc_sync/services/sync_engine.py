@@ -888,24 +888,44 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             result.created += 1
         else:
             discord.ensure_unarchived(channel_id)
-            message_id = mapping.get("message_id")
+            # Discord forum-channel invariant: the starter-message id of a
+            # forum thread equals the thread id itself. We always target the
+            # starter, even if a previous (buggy) run stored a different
+            # message_id in mapping — that lets a second client with a
+            # stale mapping converge on the starter instead of forever
+            # PATCHing an orphan reply it once posted by mistake.
+            message_id = channel_id
+            mapping_was_correct = mapping.get("message_id") == channel_id
             same_week = mapping.get("week_key") == week_key
             same_hash = mapping.get("hash") == content_hash
 
-            if message_id and same_week and same_hash:
+            if mapping_was_correct and same_week and same_hash:
                 result.skipped += 1
-            elif message_id and discord.message_exists(channel_id, message_id):
+            elif discord.message_exists(channel_id, message_id):
                 # Edit image + summary text in place
                 discord.update_weekly_image(
                     channel_id, message_id, image_bytes, filename, summary
                 )
                 result.updated += 1
             else:
-                # Either no known message or it was deleted — post a fresh one
+                # Forum starter shouldn't disappear without the thread also
+                # being gone — but if it does, post a fresh image.
                 message_id = discord.post_weekly_image(
                     channel_id, image_bytes, filename
                 )
                 result.created += 1
+
+            # Delete any leftover non-starter weekly images in the thread
+            # (residue from clients that posted replies before this fix).
+            try:
+                removed = discord.cleanup_weekly_thread_orphans(channel_id)
+                if removed:
+                    log.info(
+                        "Weekly overview: cleaned up %d orphan reply image(s)",
+                        removed,
+                    )
+            except Exception as e:
+                log.warning("Weekly overview: orphan cleanup failed: %s", e)
     except Exception as e:
         result.errors.append(f"Weekly overview sync failed: {e}")
         log.error("Weekly overview sync failed: %s", e)
