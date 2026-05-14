@@ -947,3 +947,435 @@ class TestParseSavedVariablesFGC2Prefix:
         )
         db = parse_saved_variables(sv)
         assert "profileKeys" in db
+
+
+# --- v4 namespace (current addon namespace + new packed shape) ---
+
+
+def _v4_named_event(
+    event_id="v4-evt-1",
+    title="TK mit Forga",
+    raid="tk",
+    server_time_minutes=1185,
+    revision=23,
+    participants=None,
+    roster_by_player=None,
+):
+    """Build a v4 named-keys event (pre-pack form, identical to v3 shape)."""
+    return {
+        "eventId": event_id,
+        "type": "raid",
+        "raid": raid,
+        "title": title,
+        "comment": "Consumables Pflicht",
+        "creator": "Forga",
+        "serverTimeMinutes": server_time_minutes,
+        "revision": revision,
+        "participants": participants or {},
+        "roster": {"byPlayer": roster_by_player or {}},
+        "reserves": {"byPlayer": {}},  # v4-specific sibling, parser ignores
+    }
+
+
+def _v4_named_participant(
+    attendance=2,
+    class_code="WARRIOR",
+    role_code="TANK",
+    item_level=118.0,
+    comment="",
+    first_signup_at=1777000000,  # v4-specific field
+):
+    return {
+        "attendance": attendance,
+        "classCode": class_code,
+        "roleCode": role_code,
+        "specIndex": 1,
+        "itemLevel": item_level,
+        "comment": comment,
+        "firstSignupAt": first_signup_at,  # v4 adds this
+        "revision": 5,
+        "updatedAt": 1777000000,
+        "updatedBy": "Forga",
+    }
+
+
+def _v4_packed_event(
+    event_id="v4-packed-1",
+    type_="raid",
+    raid="tk",
+    title="TK mit Forga",
+    comment="",
+    creator="Forga",
+    server_time_minutes=1185,
+    revision=23,
+    participants=None,
+    reserves=None,
+    roster=None,
+):
+    """Build a v4 packed-positional event mirroring EVENT_FIELD_INDEX in the addon."""
+    return {
+        1: event_id,
+        2: type_,
+        3: raid,
+        4: title,
+        5: comment,
+        6: creator,
+        7: server_time_minutes,
+        8: revision,
+        9: 1777000000,  # updatedAt
+        10: creator,  # updatedBy
+        11: participants or {},
+        12: reserves or {},  # v4 reserves table (new)
+        13: roster or {},
+    }
+
+
+def _v4_packed_participant(
+    attendance=1,
+    class_code="WARRIOR",
+    role_code="TANK",
+    spec_index=1,
+    item_level=118.0,
+    comment="",
+    first_signup_at=1777000000,
+):
+    """Packed participant mirroring v4's PARTICIPANT_FIELD_INDEX.
+
+    Slot 7 is ``firstSignupAt`` in v4 (it was ``updatedAt`` in v2 according
+    to legacy test fixtures). The calendar sync reads neither, but the index
+    documents the v4 contract.
+    """
+    return {
+        1: attendance,
+        2: class_code,
+        3: role_code,
+        4: spec_index,
+        5: item_level,
+        6: comment,
+        7: first_signup_at,  # NEW in v4
+        8: 5,  # revision
+        9: 1777000000,  # updatedAt
+        10: "Forga",  # updatedBy
+    }
+
+
+def _v4_packed_roster(group=1, slot=1):
+    """Packed roster entry: slots 3-5 carry sync-conflict metadata new to v4."""
+    return {1: group, 2: slot, 3: 1, 4: 1777000000, 5: "Forga"}
+
+
+def _build_v4_db(events_by_date, *, base="Realm-V4Guild"):
+    return {
+        "profiles": {
+            "Default": {
+                "guildScoped": {
+                    f"V4|{base}": {
+                        "_fgcEventStorageVersion": 1,
+                        "events": events_by_date,
+                        "sync": {
+                            "deletedEvents": {
+                                "v4-deleted-1": {"revision": 3},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "profileKeys": {"Forga - Realm": "Default"},
+    }
+
+
+class TestV4NamedKeysEvents:
+    """V4 currently writes named-keys events on disk (pre-pack form)."""
+
+    def test_extracts_v4_named_event(self):
+        db = _build_v4_db(
+            {
+                "2026-05-15": [
+                    _v4_named_event(
+                        participants={
+                            "Alice": _v4_named_participant(
+                                attendance=2,
+                                class_code="WARRIOR",
+                                role_code="TANK",
+                                item_level=118.5,
+                                comment="MT",
+                            ),
+                            "Bob": _v4_named_participant(
+                                attendance=1,
+                                class_code="MAGE",
+                                role_code="DAMAGER",
+                            ),
+                        },
+                        roster_by_player={
+                            "Alice": {"group": 1, "slot": 1, "revision": 3},
+                            # Bob signed but not slotted
+                        },
+                    ),
+                ],
+            }
+        )
+        events = extract_events(db, "V4|Realm-V4Guild")
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.event_id == "v4-evt-1"
+        assert evt.title == "TK mit Forga"
+        assert evt.raid == "tk"
+        assert evt.server_hour == 19
+        assert evt.server_minute == 45
+
+        alice = next(p for p in evt.participants if p.name == "Alice")
+        assert alice.attendance == Attendance.CONFIRMED
+        assert alice.group == 1
+        assert alice.slot == 1
+        assert alice.item_level == 118.5
+
+        bob = next(p for p in evt.participants if p.name == "Bob")
+        assert bob.attendance == Attendance.SIGNED
+        assert bob.group == 0
+        assert bob.slot == 0
+
+
+class TestV4PackedEvents:
+    """Canonical V4 shape per the addon's PackEventRecord."""
+
+    def test_extracts_v4_packed_event_dict_form(self):
+        db = _build_v4_db(
+            {
+                "2026-05-15": [
+                    _v4_packed_event(
+                        participants={
+                            "Alice": _v4_packed_participant(
+                                attendance=2,
+                                class_code="WARRIOR",
+                                role_code="TANK",
+                                item_level=118.5,
+                                comment="MT",
+                            ),
+                            "Bob": _v4_packed_participant(
+                                attendance=1, class_code="MAGE", role_code="DAMAGER"
+                            ),
+                        },
+                        roster={
+                            "Alice": _v4_packed_roster(group=2, slot=4),
+                        },
+                    ),
+                ],
+            }
+        )
+        events = extract_events(db, "V4|Realm-V4Guild")
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.event_id == "v4-packed-1"
+        assert evt.title == "TK mit Forga"
+        assert evt.raid == "tk"
+        assert evt.server_hour == 19
+        assert evt.server_minute == 45
+
+        alice = next(p for p in evt.participants if p.name == "Alice")
+        assert alice.attendance == Attendance.CONFIRMED
+        assert alice.class_code == "WARRIOR"
+        assert alice.item_level == 118.5
+        assert alice.group == 2
+        assert alice.slot == 4
+
+    def test_extracts_v4_packed_event_list_form(self):
+        """slpp may decode dense 1..n positional tables as Python lists."""
+        list_form = [
+            "v4-list-evt",
+            "raid",
+            "kara",
+            "Karazhan",
+            "",
+            "Forga",
+            1200,
+            1,
+            1777000000,
+            "Forga",
+            {},  # participants
+            {},  # reserves (v4)
+            {},  # roster
+        ]
+        db = _build_v4_db({"2026-04-10": [list_form]})
+        events = extract_events(db, "V4|Realm-V4Guild")
+        assert len(events) == 1
+        assert events[0].event_id == "v4-list-evt"
+        assert events[0].server_hour == 20
+
+    def test_v4_packed_skips_event_without_id(self):
+        bad = _v4_packed_event(event_id=None)
+        good = _v4_packed_event(event_id="ok")
+        db = _build_v4_db({"2026-04-10": [bad, good]})
+        events = extract_events(db, "V4|Realm-V4Guild")
+        assert len(events) == 1
+        assert events[0].event_id == "ok"
+
+
+class TestV4MixedBucket:
+    """Real V4 SavedVariables can hold both shapes in the same date bucket."""
+
+    def test_mixed_packed_and_named_in_same_bucket(self):
+        db = _build_v4_db(
+            {
+                "2026-05-15": [
+                    _v4_named_event(
+                        event_id="v4-named",
+                        title="Named-keys event",
+                        participants={
+                            "Alice": _v4_named_participant(attendance=2),
+                        },
+                        roster_by_player={
+                            "Alice": {"group": 1, "slot": 1},
+                        },
+                    ),
+                    _v4_packed_event(
+                        event_id="v4-packed",
+                        title="Packed event",
+                        participants={
+                            "Bob": _v4_packed_participant(attendance=2),
+                        },
+                        roster={
+                            "Bob": _v4_packed_roster(group=3, slot=2),
+                        },
+                    ),
+                ],
+            }
+        )
+        events = extract_events(db, "V4|Realm-V4Guild")
+        assert {e.event_id for e in events} == {"v4-named", "v4-packed"}
+
+        named = next(e for e in events if e.event_id == "v4-named")
+        assert named.participants[0].group == 1
+
+        packed = next(e for e in events if e.event_id == "v4-packed")
+        assert packed.participants[0].group == 3
+        assert packed.participants[0].slot == 2
+
+
+class TestV4NamespaceResolution:
+    """V4 preferred, V3 retained as rollback safety copy."""
+
+    def _two_namespace_db(self, v4_events, v3_events):
+        return {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V4|Realm-Guild": {
+                            "_fgcEventStorageVersion": 1,
+                            "events": v4_events,
+                            "sync": {"deletedEvents": {"v4-only-del": {}}},
+                        },
+                        "V3|Realm-Guild": {
+                            "_fgcEventStorageVersion": 2,
+                            "events": v3_events,
+                            "sync": {"deletedEvents": {"v3-only-del": {}}},
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_prefers_v4_when_both_populated(self):
+        db = self._two_namespace_db(
+            v4_events={
+                "2026-05-15": [_v4_named_event(event_id="from-v4")],
+            },
+            v3_events={
+                "2026-05-15": [
+                    {
+                        "eventId": "from-v3",
+                        "title": "V3 event",
+                        "serverTimeMinutes": 1200,
+                        "roster": {"byPlayer": {}},
+                    },
+                ],
+            },
+        )
+        # Config still says V3| but V4 is populated → resolver picks V4
+        events = extract_events(db, "V3|Realm-Guild")
+        assert {e.event_id for e in events} == {"from-v4"}
+
+    def test_falls_back_to_v3_when_v4_empty(self):
+        """Rollback scenario: V4 namespace exists but has no events."""
+        db = self._two_namespace_db(
+            v4_events={},  # rollback emptied V4
+            v3_events={
+                "2026-05-15": [
+                    {
+                        "eventId": "v3-survivor",
+                        "title": "Survived",
+                        "serverTimeMinutes": 1200,
+                        "roster": {"byPlayer": {}},
+                    },
+                ],
+            },
+        )
+        events = extract_events(db, "V4|Realm-Guild")
+        assert {e.event_id for e in events} == {"v3-survivor"}
+
+    def test_falls_back_to_v3_when_v4_missing(self):
+        """Pre-migration: V4 namespace doesn't exist yet."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V3|Realm-Guild": {
+                            "events": {
+                                "2026-05-15": [
+                                    {
+                                        "eventId": "pre-v4",
+                                        "title": "Pre",
+                                        "serverTimeMinutes": 1200,
+                                        "roster": {"byPlayer": {}},
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "V3|Realm-Guild")
+        assert events[0].event_id == "pre-v4"
+
+    def test_deleted_event_ids_follow_resolved_namespace(self):
+        db = self._two_namespace_db(
+            v4_events={"2026-05-15": [_v4_named_event(event_id="x")]},
+            v3_events={
+                "2026-05-15": [
+                    {
+                        "eventId": "y",
+                        "serverTimeMinutes": 1200,
+                        "roster": {"byPlayer": {}},
+                    },
+                ],
+            },
+        )
+        # V4 active → deletions come from V4
+        assert get_deleted_event_ids(db, "V3|Realm-Guild") == {"v4-only-del"}
+
+    def test_list_guild_keys_dedupes_v3_and_v4_pairs(self):
+        db = self._two_namespace_db(
+            v4_events={"2026-05-15": [_v4_named_event(event_id="x")]},
+            v3_events={
+                "2026-05-15": [
+                    {
+                        "eventId": "y",
+                        "serverTimeMinutes": 0,
+                        "roster": {"byPlayer": {}},
+                    },
+                ],
+            },
+        )
+        keys = list_guild_keys(db)
+        # Single entry per base, V4 wins
+        assert keys == ["V4|Realm-Guild"]
+
+    def test_v4_layout_detected_by_prefix(self):
+        """V4| prefix forces v4 layout regardless of event shape."""
+        db = _build_v4_db({"2026-05-15": [_v4_packed_event()]})
+        assert _detect_layout(db, "V4|Realm-V4Guild", "Default") == "v4"
+
+    def test_v4_layout_falls_back_to_prefix_when_empty(self):
+        db = _build_v4_db({})
+        assert _detect_layout(db, "V4|Realm-V4Guild", "Default") == "v4"
