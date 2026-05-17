@@ -1,31 +1,39 @@
 """Parse WoW SavedVariables for ForgasGuildCalendar (FGC_DB).
 
-Façade that exposes a stable API on top of four storage layouts:
+Façade that exposes a stable API across the addon's evolving storage layouts:
 
 * **v1** — named-keys events, ``group``/``slot`` inline on each participant
 * **v2** — FGC2 packed positional arrays plus a separate ``rosterByPlayer``
   table at ``event[13]``
 * **v3** — named-keys events (like v1) but with the roster externalized into
-  ``event["roster"]["byPlayer"]`` (named keys, not positional). Companion
-  signal: the addon prefixes ``profiles[].guildScoped`` keys with ``V3|``
-* **v4** — current addon namespace (``V4|<base>``). Canonical shape is
-  packed-positional (the addon's ``PackEventRecord`` rewrites records into
-  1-based Lua arrays with metatable-based named accessors), but in practice
-  V4 buckets can hold both packed *and* named-keys events because packing
-  only happens when a record passes through the mutation path.
-  ``lua_parser_v4`` sniffs each event individually
+  ``event["roster"]["byPlayer"]`` (named keys, not positional). The addon
+  prefixes ``profiles[].guildScoped`` keys with ``V3|``
+* **v4** — packed-positional shape with a new participant field
+  (``firstSignupAt``) and a reserves table. The addon ``V4|`` namespace was
+  rolled out and then **discarded** — ``Core-PackedStorage.lua`` exposes
+  ``GetDiscardedGuildScopedStorageKey() → "V4"`` and
+  ``CleanupDiscardedGuildScopedStorage`` deletes it when allowed. The
+  on-disk shape lives on, however, because the addon ships v5 buckets using
+  the same packing code
+* **v5** — current addon namespace (``V5|<base>``;
+  ``FGC.GUILD_SCOPED_STORAGE_NAMESPACE = "V5"`` in the addon's ``Core.lua``).
+  Same on-disk shape as v4: ``PackEventRecord`` produces packed positional
+  arrays, and pre-pack records sit as named-keys events in the same bucket.
+  ``lua_parser_v4`` already sniffs both shapes per event, so v5 reuses it
 
 The dispatch strategy is two-tier:
 
-1. **Namespace resolution** — :func:`_resolve_guild_key` strips any
-   ``V3|`` / ``V4|`` prefix from the configured ``guild_key`` and probes
-   ``V4|<base>`` first, falling back to ``V3|<base>`` and finally the bare
-   key. So a stale ``V3|…`` config keeps working after the addon's V3→V4
-   bump, and rollback (empty/missing V4) routes reads back to V3 without
-   code changes. V3 is retained indefinitely as the rollback safety copy
-2. **Layout dispatch** — once the namespace is resolved, ``V4|`` always
-   routes to :mod:`lua_parser_v4` (which does its own per-event shape sniff
-   internally). For everything else, the first parseable event is content-
+1. **Namespace resolution** — :func:`_resolve_guild_key` strips any known
+   namespace prefix from the configured ``guild_key`` and probes
+   ``V5|<base>`` first, then ``V3|<base>``, then the bare key. This mirrors
+   the addon's own bootstrap preference (current → previous → legacy,
+   skipping the discarded V4). A stale ``V3|…`` config keeps working after
+   the addon's bump to V5, and rollback (empty/missing V5) routes reads
+   back to V3 without code changes. V3 is retained indefinitely as the
+   rollback safety copy
+2. **Layout dispatch** — ``V5|`` and ``V4|`` both route to
+   :mod:`lua_parser_v4` (per-event shape sniff handles the packed/named-
+   keys mix). For other namespaces, the first parseable event is content-
    sniffed (list / dict-with-int-1 → v2, dict-with-eventId + roster.byPlayer
    → v3, dict-with-eventId only → v1). The ``_fgcEventStorageVersion`` flag
    is intentionally *not* used — during the FGC2 rollout it was observed set
@@ -56,10 +64,14 @@ from fgc_sync.services import (
 _FGC_DB_PATTERN = re.compile(r"^FGC2?_DB\s*=\s*", re.MULTILINE)
 
 # Namespace prefixes the addon has used on ``profiles[].guildScoped`` keys,
-# ordered from newest (preferred) to oldest. V4 is the current namespace; V3 is
-# retained as a rollback safety copy. Bare keys (no prefix) cover legacy data
-# from before namespacing existed.
-_NAMESPACE_PREFIXES: tuple[str, ...] = ("V4|", "V3|")
+# ordered from newest (preferred) to oldest. V5 is the current namespace; V3
+# is retained as a rollback safety copy. V4 is deliberately omitted — the
+# addon classifies it as a *discarded* namespace
+# (``GetDiscardedGuildScopedStorageKey() → "V4"`` in ``Core-PackedStorage.lua``)
+# and its bootstrap preference skips V4 (current → V3 → legacy). Mirroring
+# that order keeps the sync consistent with whatever the addon would read.
+# Bare keys (no prefix) cover legacy data from before namespacing existed.
+_NAMESPACE_PREFIXES: tuple[str, ...] = ("V5|", "V3|")
 
 
 def parse_saved_variables(file_path: Path) -> dict:
@@ -72,10 +84,15 @@ def parse_saved_variables(file_path: Path) -> dict:
 
 
 def _strip_namespace_prefix(guild_key: str) -> str:
-    """Return ``guild_key`` with any ``V3|`` / ``V4|`` prefix removed."""
+    """Return ``guild_key`` with any known namespace prefix removed.
+
+    Strips ``V5|`` / ``V3|`` (the active prefixes) as well as the discarded
+    ``V4|``, so a stranded V4 config still resolves to the same base name
+    as its V3/V5 siblings.
+    """
     if not isinstance(guild_key, str):
         return ""
-    for prefix in _NAMESPACE_PREFIXES:
+    for prefix in (*_NAMESPACE_PREFIXES, "V4|"):
         if guild_key.startswith(prefix):
             return guild_key[len(prefix) :]
     return guild_key
@@ -84,11 +101,11 @@ def _strip_namespace_prefix(guild_key: str) -> str:
 def _resolve_guild_key(db: dict, configured: str, profile: str) -> str:
     """Resolve ``configured`` to whichever namespace actually holds events.
 
-    Strips any prefix and probes ``V4|<base>`` then ``V3|<base>``, returning
-    the first candidate whose ``events`` table is non-empty. Falls back to the
-    configured key as-is when neither prefix is populated — that covers fresh
-    installs, bare-key legacy data, and the case where the addon has
-    bootstrapped V4 but not written any events yet.
+    Strips any known prefix and probes ``V5|<base>`` then ``V3|<base>``,
+    returning the first candidate whose ``events`` table is non-empty. Falls
+    back to the configured key as-is when neither prefix is populated — that
+    covers fresh installs, bare-key legacy data, V4-only stragglers, and the
+    case where the addon has bootstrapped V5 but not written any events yet.
     """
     guild_scoped = db.get("profiles", {}).get(profile, {}).get("guildScoped", {})
     if not isinstance(guild_scoped, dict):
@@ -110,11 +127,12 @@ def _resolve_guild_key(db: dict, configured: str, profile: str) -> str:
 def _detect_layout(db: dict, guild_key: str, profile: str) -> str:
     """Return ``"v1"``, ``"v2"``, ``"v3"``, or ``"v4"``.
 
-    A ``V4|`` guild key short-circuits to ``"v4"`` — that namespace is the
-    addon's current home and may hold a mix of packed and named-keys events
-    within the same bucket, so per-event sniffing happens inside the v4
-    parser rather than at this façade. For other namespaces, the first
-    parseable event is content-sniffed:
+    A ``V5|`` or ``V4|`` guild key short-circuits to ``"v4"`` — both
+    namespaces share the same on-disk shape (packed positional via
+    ``PackEventRecord`` plus pre-pack named-keys records in the same
+    bucket), so per-event sniffing happens inside the v4 parser rather than
+    at this façade. For other namespaces, the first parseable event is
+    content-sniffed:
 
     * Lua list / Python list → packed positional (v2)
     * dict containing integer key ``1`` and no ``"eventId"`` → packed (v2)
@@ -126,7 +144,9 @@ def _detect_layout(db: dict, guild_key: str, profile: str) -> str:
     When the events table is empty, the guild-key namespace prefix is used
     as a fallback hint; otherwise defaults to v1.
     """
-    if isinstance(guild_key, str) and guild_key.startswith("V4|"):
+    if isinstance(guild_key, str) and (
+        guild_key.startswith("V5|") or guild_key.startswith("V4|")
+    ):
         return "v4"
 
     events_by_date = (
@@ -163,11 +183,12 @@ def _detect_layout(db: dict, guild_key: str, profile: str) -> str:
 def _layout_from_guild_key(guild_key: str) -> str:
     """Fallback layout hint from the addon's guild-key namespace prefix.
 
-    ``V4|`` maps to ``"v4"`` and ``V3|`` to ``"v3"`` — only consulted when
-    the events table is empty (no shape to sniff). Bare keys default to v1.
+    ``V5|`` / ``V4|`` map to ``"v4"`` (same on-disk shape) and ``V3|`` to
+    ``"v3"`` — only consulted when the events table is empty (no shape to
+    sniff). Bare keys default to v1.
     """
     if isinstance(guild_key, str):
-        if guild_key.startswith("V4|"):
+        if guild_key.startswith("V5|") or guild_key.startswith("V4|"):
             return "v4"
         if guild_key.startswith("V3|"):
             return "v3"
@@ -180,8 +201,8 @@ def extract_events(
     """Extract calendar events for a guild from parsed FGC_DB.
 
     Resolves the configured ``guild_key`` to whichever namespace actually
-    holds events (V4 preferred, V3 fallback) so a stale config keeps working
-    after the addon's V3→V4 bump and rollbacks route automatically.
+    holds events (V5 preferred, V3 fallback) so a stale config keeps working
+    after the addon's bump to V5 and rollbacks route automatically.
     """
     resolved = _resolve_guild_key(db, guild_key, profile)
     layout = _detect_layout(db, resolved, profile)
@@ -217,9 +238,9 @@ def get_deleted_event_ids(
 def list_guild_keys(db: dict, profile: str = "Default") -> list[str]:
     """Return available guild keys from the parsed DB, one entry per base.
 
-    During the V3→V4 namespace bump both ``V3|<base>`` and ``V4|<base>`` exist
+    During the namespace bump both ``V3|<base>`` and ``V5|<base>`` exist
     side by side (V3 is kept as a rollback safety copy). Deduplicate by base
-    name so the setup picker doesn't surface duplicates — V4 wins over V3
+    name so the setup picker doesn't surface duplicates — V5 wins over V3
     wins over the bare key.
     """
     guild_scoped = db.get("profiles", {}).get(profile, {}).get("guildScoped", {})

@@ -1252,18 +1252,22 @@ class TestV4MixedBucket:
         assert packed.participants[0].slot == 2
 
 
-class TestV4NamespaceResolution:
-    """V4 preferred, V3 retained as rollback safety copy."""
+class TestV5NamespaceResolution:
+    """V5 preferred (current addon namespace), V3 retained as rollback safety
+    copy. V4 is the addon's *discarded* namespace and is intentionally skipped
+    by the resolver — see ``Core-PackedStorage.lua``'s
+    ``GetDiscardedGuildScopedStorageKey``.
+    """
 
-    def _two_namespace_db(self, v4_events, v3_events):
+    def _two_namespace_db(self, v5_events, v3_events):
         return {
             "profiles": {
                 "Default": {
                     "guildScoped": {
-                        "V4|Realm-Guild": {
+                        "V5|Realm-Guild": {
                             "_fgcEventStorageVersion": 1,
-                            "events": v4_events,
-                            "sync": {"deletedEvents": {"v4-only-del": {}}},
+                            "events": v5_events,
+                            "sync": {"deletedEvents": {"v5-only-del": {}}},
                         },
                         "V3|Realm-Guild": {
                             "_fgcEventStorageVersion": 2,
@@ -1275,10 +1279,10 @@ class TestV4NamespaceResolution:
             },
         }
 
-    def test_prefers_v4_when_both_populated(self):
+    def test_prefers_v5_when_both_populated(self):
         db = self._two_namespace_db(
-            v4_events={
-                "2026-05-15": [_v4_named_event(event_id="from-v4")],
+            v5_events={
+                "2026-05-15": [_v4_named_event(event_id="from-v5")],
             },
             v3_events={
                 "2026-05-15": [
@@ -1291,14 +1295,14 @@ class TestV4NamespaceResolution:
                 ],
             },
         )
-        # Config still says V3| but V4 is populated → resolver picks V4
+        # Config still says V3| but V5 is populated → resolver picks V5
         events = extract_events(db, "V3|Realm-Guild")
-        assert {e.event_id for e in events} == {"from-v4"}
+        assert {e.event_id for e in events} == {"from-v5"}
 
-    def test_falls_back_to_v3_when_v4_empty(self):
-        """Rollback scenario: V4 namespace exists but has no events."""
+    def test_falls_back_to_v3_when_v5_empty(self):
+        """Rollback scenario: V5 namespace exists but has no events."""
         db = self._two_namespace_db(
-            v4_events={},  # rollback emptied V4
+            v5_events={},  # rollback emptied V5
             v3_events={
                 "2026-05-15": [
                     {
@@ -1310,11 +1314,11 @@ class TestV4NamespaceResolution:
                 ],
             },
         )
-        events = extract_events(db, "V4|Realm-Guild")
+        events = extract_events(db, "V5|Realm-Guild")
         assert {e.event_id for e in events} == {"v3-survivor"}
 
-    def test_falls_back_to_v3_when_v4_missing(self):
-        """Pre-migration: V4 namespace doesn't exist yet."""
+    def test_falls_back_to_v3_when_v5_missing(self):
+        """Pre-migration: V5 namespace doesn't exist yet."""
         db = {
             "profiles": {
                 "Default": {
@@ -1323,7 +1327,7 @@ class TestV4NamespaceResolution:
                             "events": {
                                 "2026-05-15": [
                                     {
-                                        "eventId": "pre-v4",
+                                        "eventId": "pre-v5",
                                         "title": "Pre",
                                         "serverTimeMinutes": 1200,
                                         "roster": {"byPlayer": {}},
@@ -1336,11 +1340,42 @@ class TestV4NamespaceResolution:
             },
         }
         events = extract_events(db, "V3|Realm-Guild")
-        assert events[0].event_id == "pre-v4"
+        assert events[0].event_id == "pre-v5"
+
+    def test_skips_discarded_v4_in_favor_of_v3(self):
+        """V4 is the addon's *discarded* namespace — the resolver must skip
+        it and fall back to V3, matching the addon's own bootstrap order
+        (current → V3 → legacy, no V4)."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V4|Realm-Guild": {
+                            "events": {
+                                "2026-05-15": [_v4_named_event(event_id="stranded-v4")],
+                            },
+                        },
+                        "V3|Realm-Guild": {
+                            "events": {
+                                "2026-05-15": [
+                                    {
+                                        "eventId": "from-v3",
+                                        "serverTimeMinutes": 1200,
+                                        "roster": {"byPlayer": {}},
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        events = extract_events(db, "V3|Realm-Guild")
+        assert {e.event_id for e in events} == {"from-v3"}
 
     def test_deleted_event_ids_follow_resolved_namespace(self):
         db = self._two_namespace_db(
-            v4_events={"2026-05-15": [_v4_named_event(event_id="x")]},
+            v5_events={"2026-05-15": [_v4_named_event(event_id="x")]},
             v3_events={
                 "2026-05-15": [
                     {
@@ -1351,12 +1386,12 @@ class TestV4NamespaceResolution:
                 ],
             },
         )
-        # V4 active → deletions come from V4
-        assert get_deleted_event_ids(db, "V3|Realm-Guild") == {"v4-only-del"}
+        # V5 active → deletions come from V5
+        assert get_deleted_event_ids(db, "V3|Realm-Guild") == {"v5-only-del"}
 
-    def test_list_guild_keys_dedupes_v3_and_v4_pairs(self):
+    def test_list_guild_keys_dedupes_v3_and_v5_pairs(self):
         db = self._two_namespace_db(
-            v4_events={"2026-05-15": [_v4_named_event(event_id="x")]},
+            v5_events={"2026-05-15": [_v4_named_event(event_id="x")]},
             v3_events={
                 "2026-05-15": [
                     {
@@ -1368,11 +1403,39 @@ class TestV4NamespaceResolution:
             },
         )
         keys = list_guild_keys(db)
-        # Single entry per base, V4 wins
-        assert keys == ["V4|Realm-Guild"]
+        # Single entry per base, V5 wins
+        assert keys == ["V5|Realm-Guild"]
+
+    def test_v5_layout_detected_by_prefix(self):
+        """V5| prefix forces v4 layout (same on-disk shape as v4)."""
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V5|Realm-V5Guild": {
+                            "events": {"2026-05-15": [_v4_packed_event()]},
+                        },
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "V5|Realm-V5Guild", "Default") == "v4"
+
+    def test_v5_layout_falls_back_to_prefix_when_empty(self):
+        db = {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        "V5|Realm-V5Guild": {"events": {}},
+                    },
+                },
+            },
+        }
+        assert _detect_layout(db, "V5|Realm-V5Guild", "Default") == "v4"
 
     def test_v4_layout_detected_by_prefix(self):
-        """V4| prefix forces v4 layout regardless of event shape."""
+        """V4| prefix still routes to v4 layout — buckets stranded after the
+        V5 cutover remain readable if the user happens to point at them."""
         db = _build_v4_db({"2026-05-15": [_v4_packed_event()]})
         assert _detect_layout(db, "V4|Realm-V4Guild", "Default") == "v4"
 
