@@ -55,10 +55,12 @@ def config(tmp_path):
 
 @pytest.fixture
 def patched_collect(monkeypatch):
+    """Bypass SavedVariables parsing — load_events returns a single test event."""
+    evt = _evt()
     monkeypatch.setattr(
         sync_engine,
-        "_collect_week_events_for_overview",
-        lambda config: ([_evt()], []),
+        "_load_events_for_overview",
+        lambda config: ({evt.event_id: evt}, []),
     )
     monkeypatch.setattr(
         sync_engine, "_is_local_data_stale", lambda config, discord: False
@@ -83,21 +85,25 @@ def _make_discord(message_exists: bool = True) -> MagicMock:
 
 class TestStarterTargeting:
     def test_first_time_adoption_patches_starter(self, config, patched_collect):
-        """Second client with empty mapping must PATCH the starter, not post a reply."""
+        """Second client with empty mapping must PATCH the starter (current week)
+        and POST the next-week reply on first sync."""
         discord = _make_discord()
 
         result = sync_engine.execute_weekly_sync(config, discord)
 
         assert result.errors == []
-        discord.post_weekly_image.assert_not_called()
+        # Starter (current week) is PATCHed in place at channel_id
         discord.update_weekly_image.assert_called_once()
         args = discord.update_weekly_image.call_args.args
         assert args[0] == _EXISTING_THREAD_ID
         assert args[1] == _EXISTING_THREAD_ID  # starter id == thread id
+        # Next-week reply is created on first sync because next_message_id is absent
+        discord.post_weekly_image.assert_called_once()
 
         mapping = config.get("discord_weekly_mapping")
         assert mapping["channel_id"] == _EXISTING_THREAD_ID
         assert mapping["message_id"] == _EXISTING_THREAD_ID
+        assert mapping["next_message_id"] == "new-reply-id"
 
     def test_stale_mapping_converges_on_starter(self, config, patched_collect):
         """A client whose mapping points at an orphan reply must re-target the starter."""
@@ -126,18 +132,31 @@ class TestStarterTargeting:
     def test_skip_when_mapping_already_correct_and_unchanged(
         self, config, patched_collect, monkeypatch
     ):
-        """Avoid redundant PATCH when mapping is already pointing at starter and content matches."""
-        monday, _sunday, week_key = sync_engine.current_week_bounds()
-        from fgc_sync.services.weekly_overview import compute_weekly_hash
+        """Both messages skip when current+next mappings match content and week keys."""
+        from fgc_sync.services.weekly_overview import (
+            collect_week_events,
+            compute_weekly_hash,
+            current_week_bounds,
+            next_week_bounds,
+        )
 
-        h = compute_weekly_hash([_evt()])
+        evt = _evt()
+        by_id = {evt.event_id: evt}
+        _cur_mon, _cur_sun, cur_week = current_week_bounds()
+        _nxt_mon, _nxt_sun, nxt_week = next_week_bounds()
+        cur_hash = compute_weekly_hash(collect_week_events(by_id, week_offset=0))
+        nxt_hash = compute_weekly_hash(collect_week_events(by_id, week_offset=1))
+
         config.set(
             "discord_weekly_mapping",
             {
                 "channel_id": _EXISTING_THREAD_ID,
                 "message_id": _EXISTING_THREAD_ID,
-                "hash": h,
-                "week_key": week_key,
+                "hash": cur_hash,
+                "week_key": cur_week,
+                "next_message_id": "reply-id-123",
+                "next_hash": nxt_hash,
+                "next_week_key": nxt_week,
                 "sv_mtime": 0,
             },
         )
@@ -145,20 +164,21 @@ class TestStarterTargeting:
 
         result = sync_engine.execute_weekly_sync(config, discord)
 
-        assert result.skipped == 1
+        assert result.skipped == 2  # starter + next both skip
         discord.update_weekly_image.assert_not_called()
         discord.post_weekly_image.assert_not_called()
 
 
 class TestOrphanCleanup:
     def test_cleanup_invoked_after_patch(self, config, patched_collect):
-        """After every successful sync we attempt to clean up orphan replies."""
+        """After every successful sync we attempt to clean up orphan replies.
+        The next-week reply id must be in keep_ids so it isn't deleted."""
         discord = _make_discord()
 
         sync_engine.execute_weekly_sync(config, discord)
 
         discord.cleanup_weekly_thread_orphans.assert_called_once_with(
-            _EXISTING_THREAD_ID
+            _EXISTING_THREAD_ID, keep_ids={"new-reply-id"}
         )
 
     def test_cleanup_failure_does_not_break_sync(self, config, patched_collect):
@@ -168,6 +188,8 @@ class TestOrphanCleanup:
 
         result = sync_engine.execute_weekly_sync(config, discord)
 
-        # Sync still reports the PATCH as an update; cleanup failure is logged.
+        # Sync still reports the starter PATCH (updated) and next-week POST (created);
+        # cleanup failure is logged but doesn't propagate.
         assert result.errors == []
         assert result.updated == 1
+        assert result.created == 1

@@ -249,8 +249,10 @@
     "image_subtitle": "{count} Raid(s) geplant",
     "label_confirmed": "Bestätigt",
     "label_signed": "Angemeldet",
+    "label_open": "Offen",
     "label_confirmed_short": "Best.",
     "label_signed_short": "Angem.",
+    "label_open_short": "Offen",
     "summary": "**Raid Übersicht — KW {week:02d} / {year}**\n{date_range}\n{count} Raid(s) geplant"
   },
   "roster": {

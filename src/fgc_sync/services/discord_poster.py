@@ -38,6 +38,21 @@ RAID_SHORT_NAMES: dict[str, str] = {
     "zulaman": "ZA",
 }
 
+# Roster size per raid. Drives the "full" highlight + "open spots" count
+# in the weekly overview. Unknown raids fall back to RAID_MAX_SIZE_DEFAULT.
+RAID_MAX_SIZE: dict[str, int] = {
+    "karazhan": 10,
+    "gruul": 25,
+    "magtheridon": 25,
+    "serpentshrine": 25,
+    "tempest_keep": 25,
+    "hyjal": 25,
+    "black_temple": 25,
+    "sunwell": 25,
+    "zulaman": 10,
+}
+RAID_MAX_SIZE_DEFAULT = 25
+
 
 def _short_raid_name(raid: str) -> str:
     """Convert a raid field value to a short name for thread titles."""
@@ -49,6 +64,19 @@ def _short_raid_name(raid: str) -> str:
             return short
     # Fallback: titlecase the raw raid name
     return raid.replace("_", " ").title()[:15] or "Event"
+
+
+def max_roster_size(raid: str) -> int:
+    """Return the max roster size for *raid* (e.g. 10 for Kara, 25 for Gruul)."""
+    if not raid:
+        return RAID_MAX_SIZE_DEFAULT
+    raid_lower = raid.lower().replace(" ", "_")
+    if raid_lower in RAID_MAX_SIZE:
+        return RAID_MAX_SIZE[raid_lower]
+    for key, size in RAID_MAX_SIZE.items():
+        if key in raid_lower:
+            return size
+    return RAID_MAX_SIZE_DEFAULT
 
 
 def compute_event_hash(event: CalendarEvent) -> str:
@@ -346,6 +374,7 @@ class DiscordPoster:
         channel_id: str,
         image_bytes: bytes,
         filename: str,
+        content: str = "",
     ) -> str:
         """Post the weekly overview image in an existing thread. Returns message id."""
         data = self._upload_image(
@@ -353,7 +382,7 @@ class DiscordPoster:
             f"/channels/{channel_id}/messages",
             image_bytes,
             filename,
-            "",
+            content,
         )
         return data["id"]
 
@@ -374,16 +403,22 @@ class DiscordPoster:
             content,
         )
 
-    def cleanup_weekly_thread_orphans(self, channel_id: str) -> int:
+    def cleanup_weekly_thread_orphans(
+        self,
+        channel_id: str,
+        keep_ids: set[str] | None = None,
+    ) -> int:
         """Delete leftover weekly-overview reply messages in *channel_id*.
 
-        The weekly thread is meant to hold exactly one message — its starter,
-        whose id equals the thread id. Older buggy clients sometimes posted
-        the weekly image as a reply, leaving duplicate messages behind. This
-        scans up to 100 recent messages and deletes any that carry a
-        ``weekly_*.png`` attachment *and* whose message id differs from the
-        thread id. Returns the number of messages deleted.
+        The weekly thread holds the starter (current-week image, id == thread id)
+        plus one reply (next-week image, id in *keep_ids*). Anything else with a
+        ``weekly_*.png`` attachment is residue from past buggy clients — scan
+        the last 100 messages and delete it. Returns the number removed.
         """
+        protected = {channel_id}
+        if keep_ids:
+            protected.update(kid for kid in keep_ids if kid)
+
         try:
             messages = self._request(
                 "GET",
@@ -396,7 +431,7 @@ class DiscordPoster:
         removed = 0
         for msg in messages or []:
             msg_id = msg.get("id")
-            if not msg_id or msg_id == channel_id:
+            if not msg_id or msg_id in protected:
                 continue
             has_weekly_image = any(
                 _WEEKLY_FILENAME_PATTERN.match(att.get("filename", ""))

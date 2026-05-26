@@ -249,8 +249,10 @@
     "image_subtitle": "{count} raid(s) scheduled",
     "label_confirmed": "Confirmed",
     "label_signed": "Signed",
+    "label_open": "Open",
     "label_confirmed_short": "Conf.",
     "label_signed_short": "Sign.",
+    "label_open_short": "Open",
     "summary": "**Raid Overview — CW {week:02d} / {year}**\n{date_range}\n{count} raid(s) scheduled"
   },
   "roster": {

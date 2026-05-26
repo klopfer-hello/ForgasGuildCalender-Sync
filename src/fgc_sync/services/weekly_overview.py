@@ -52,6 +52,9 @@ _DEFAULT_END_HOUR = 24  # exclusive
 # Event cell palette (darker than header — still readable)
 _EVENT_FILL = (56, 76, 110)
 _EVENT_BORDER = (120, 160, 220)
+# Full-raid palette (confirmed_count >= max roster size)
+_EVENT_FILL_FULL = (40, 100, 60)
+_EVENT_BORDER_FULL = (110, 200, 140)
 _GRID_FILL = (28, 28, 36)
 _GRID_STRIPE = (36, 36, 46)
 
@@ -76,23 +79,43 @@ def format_weekly_summary(monday: date, num_events: int) -> str:
     )
 
 
-def current_week_bounds(today: date | None = None) -> tuple[date, date, str]:
-    """Return (monday, sunday, week_key) for the ISO week containing *today*."""
+def week_bounds(
+    today: date | None = None,
+    *,
+    week_offset: int = 0,
+) -> tuple[date, date, str]:
+    """Return (monday, sunday, week_key) for an ISO week relative to *today*.
+
+    ``week_offset=0`` is the current week, ``1`` is next week, ``-1`` last
+    week. The returned ``week_key`` is computed from the target monday's ISO
+    calendar (not today's) so year/week numbers stay correct across rollovers.
+    """
     today = today or date.today()
-    monday = today - timedelta(days=today.weekday())
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
-    iso = today.isocalendar()
-    # isocalendar() returns a named tuple on 3.9+; use attribute access
+    iso = monday.isocalendar()
     week_key = f"{iso[0]}-W{iso[1]:02d}"
     return monday, sunday, week_key
+
+
+def current_week_bounds(today: date | None = None) -> tuple[date, date, str]:
+    """Return (monday, sunday, week_key) for the ISO week containing *today*."""
+    return week_bounds(today, week_offset=0)
+
+
+def next_week_bounds(today: date | None = None) -> tuple[date, date, str]:
+    """Return (monday, sunday, week_key) for the ISO week after *today*'s."""
+    return week_bounds(today, week_offset=1)
 
 
 def collect_week_events(
     events: dict[str, CalendarEvent],
     today: date | None = None,
+    *,
+    week_offset: int = 0,
 ) -> list[CalendarEvent]:
-    """Filter *events* to those falling in the current ISO week, sorted."""
-    monday, sunday, _ = current_week_bounds(today)
+    """Filter *events* to those in the requested ISO week (default: current)."""
+    monday, sunday, _ = week_bounds(today, week_offset=week_offset)
     out: list[CalendarEvent] = []
     for evt in events.values():
         try:
@@ -112,6 +135,12 @@ def _short_raid_name(raid: str, title: str) -> str:
     return short(raid) if raid else (title[:12] or "Event")
 
 
+def _max_roster_size(raid: str) -> int:
+    from fgc_sync.services.discord_poster import max_roster_size
+
+    return max_roster_size(raid)
+
+
 def compute_weekly_hash(events: list[CalendarEvent]) -> str:
     """Short hash over everything the image displays."""
     payload_parts = []
@@ -126,6 +155,7 @@ def compute_weekly_hash(events: list[CalendarEvent]) -> str:
                     evt.creator or "",
                     str(evt.confirmed_count),
                     str(evt.signed_count),
+                    str(_max_roster_size(evt.raid)),
                 ]
             )
         )
@@ -328,7 +358,11 @@ def render_weekly_overview(
         y1 = body_top + int((start_minutes + duration_minutes) * _HOUR_HEIGHT / 60) - 2
         y1 = min(y1, body_top + hour_span * _HOUR_HEIGHT - 2)
 
-        draw.rectangle([(x0, y0), (x1, y1)], fill=_EVENT_FILL, outline=_EVENT_BORDER)
+        max_spots = _max_roster_size(evt.raid)
+        is_full = evt.confirmed_count >= max_spots
+        cell_fill = _EVENT_FILL_FULL if is_full else _EVENT_FILL
+        cell_border = _EVENT_BORDER_FULL if is_full else _EVENT_BORDER
+        draw.rectangle([(x0, y0), (x1, y1)], fill=cell_fill, outline=cell_border)
 
         # Pick cell fonts that fit the lane width. 1 lane = full column,
         # 2 lanes ≈ half, 3+ lanes ≈ third — shrink + abbreviate proportionally.
@@ -340,6 +374,7 @@ def render_weekly_overview(
             leader_max = 8
             label_confirmed = t("weekly.label_confirmed_short")
             label_signed = t("weekly.label_signed_short")
+            label_open = t("weekly.label_open_short")
         elif lanes == 2:
             cell_title = _load_font(11 * _SCALE, bold=True)
             cell_text = _load_font(9 * _SCALE)
@@ -348,6 +383,7 @@ def render_weekly_overview(
             leader_max = 12
             label_confirmed = t("weekly.label_confirmed")
             label_signed = t("weekly.label_signed")
+            label_open = t("weekly.label_open")
         else:
             cell_title = font_body_bold
             cell_text = font_small
@@ -356,6 +392,7 @@ def render_weekly_overview(
             leader_max = 18
             label_confirmed = t("weekly.label_confirmed")
             label_signed = t("weekly.label_signed")
+            label_open = t("weekly.label_open")
 
         short_name = _short_raid_name(evt.raid, evt.title)
         end_h, end_m = _end_time(evt)
@@ -364,7 +401,7 @@ def render_weekly_overview(
             f"{_time_label(end_h, end_m)}"
         )
         leader = (evt.creator or "—")[:leader_max]
-        angemeldet_count = evt.confirmed_count + evt.signed_count
+        open_count = max(0, max_spots - evt.confirmed_count)
 
         text_x = x0 + 6 * _SCALE
         text_y = y0 + 5 * _SCALE
@@ -383,7 +420,14 @@ def render_weekly_overview(
         text_y += line_h
         draw.text(
             (text_x, text_y),
-            f"{label_signed}: {angemeldet_count}",
+            f"{label_signed}: {evt.signed_count}",
+            fill=SUBTEXT_COLOR,
+            font=cell_text,
+        )
+        text_y += line_h
+        draw.text(
+            (text_x, text_y),
+            f"{label_open}: {open_count}",
             fill=SUBTEXT_COLOR,
             font=cell_text,
         )

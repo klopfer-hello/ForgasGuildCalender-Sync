@@ -220,25 +220,33 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 ### Sync Logic (`sync_engine.py` → `execute_weekly_sync`)
 
-Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `Wöchentliche Raid Übersicht` / `Weekly Raid Overview`) with the current ISO week's schedule as a school-timetable image. Invariants:
+Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `Wöchentliche Raid Übersicht` / `Weekly Raid Overview`) holding **two messages**: the starter is the **current** ISO week, a reply is **next** week. Both carry a school-timetable image of their week's schedule. Invariants:
 
 - **Stale-data guard** identical to per-event sync (`_is_local_data_stale`)
-- **No roster filter, no 7-day lookahead**: every guild event in the current ISO week (Mon–Sun) is included regardless of participation status (unlike per-event threads)
-- **Thread name is constant**: only the starter message + image are PATCHed in place; the thread is never recreated per week
-- **PATCH target is always `channel_id`**: by Discord's forum-channel invariant the starter-message id equals the thread id, so the sync ignores any stored `message_id` and always targets the starter. This makes second-client adoption and stale-mapping recovery converge on a single message instead of posting a reply
+- **No roster filter, no 7-day lookahead**: every guild event in the target ISO week (Mon–Sun) is included regardless of participation status (unlike per-event threads)
+- **Thread name is constant**: only the message contents + images are PATCHed in place; the thread is never recreated per week
+- **Starter == current week, reply == next week**: PATCH target for the starter is always `channel_id` (Discord forum-channel invariant: starter-message id equals thread id). The next-week reply lives in `next_message_id` and is PATCHed in place; if it's missing or 404s, post a fresh reply
+- **Week rollover repurposes messages**: on every sync, both messages get re-PATCHed with the new (current, next) pair — week N's "current" message keeps being the current message in week N+1, just PATCHed with new content. No reposting between weeks
 - **Cross-language adoption**: when no thread is in mapping, iterate `candidate_weekly_thread_names()` so an old-language thread is adopted instead of duplicated
-- **Orphan cleanup**: after each successful sync, `cleanup_weekly_thread_orphans` scans up to 100 messages and deletes any non-starter message carrying a `weekly_*.png` attachment — residue from clients that previously posted the image as a reply. Requires Manage Messages on the forum if the orphan was authored by a different bot user; messages the bot itself authored are deletable without it
-- Skip when mapping already points at the starter *and* `{hash, week_key}` are both unchanged — a mismatched `message_id` always triggers a fresh PATCH so the starter wins
+- **Orphan cleanup**: after each successful sync, `cleanup_weekly_thread_orphans(channel_id, keep_ids={next_message_id})` scans up to 100 messages and deletes any `weekly_*.png` attachment that isn't the starter or the next-week reply. Requires Manage Messages on the forum if the orphan was authored by a different bot user; messages the bot itself authored are deletable without it. **`keep_ids` must always include `next_message_id`** or the next-week reply gets deleted on every sync
+- Per-message skip: starter skips when `{hash, week_key}` for current week are unchanged AND stored `message_id == channel_id`; reply skips when `{next_hash, next_week_key}` are unchanged
 
 ### Image (`weekly_overview.py` → `render_weekly_overview`)
 
 - **Header**: `Raid Übersicht — KW <nn> / <year>`, full date range (`dd.mm.yyyy – dd.mm.yyyy`), raid count
 - **Grid**: 7 day columns (Mo–So) × hourly rows. Hour range is **dynamic** — `_determine_hour_range` picks `min(earliest_event, 17)` down to `max(latest_event_end, start+4)+1` (trailing labeled row for end clarity), capped at 03:00 next day
-- **Event cell**: short name, time range (`20:00–22:30`), `RL: <leader>`, `Bestätigt: X` (= confirmed), `Angemeldet: X+Y` (= confirmed + signed)
-- **Parallel raids**: greedy lane assignment per day column — overlapping raids sit side-by-side in equal-width lanes. Fonts shrink and labels abbreviate (`Best.`/`Angem.`) for 3+ lanes
+- **Event cell**: short name, time range (`20:00–22:30`), `RL: <leader>`, `Bestätigt: X` (just confirmed), `Angemeldet: Y` (just signed — **not** confirmed+signed), `Offen: Z` (= `max(0, max_roster - confirmed)`)
+- **Full-raid highlight**: when `confirmed_count >= max_roster_size(raid)` the cell renders green (`_EVENT_FILL_FULL` / `_EVENT_BORDER_FULL`) instead of the default blue. Roster sizes come from `discord_poster.RAID_MAX_SIZE` (Kara/ZA = 10, all other TBC 25-mans = 25, default `RAID_MAX_SIZE_DEFAULT = 25` for unknown raids); `max_roster_size(raid)` is the public lookup
+- **Parallel raids**: greedy lane assignment per day column — overlapping raids sit side-by-side in equal-width lanes. Fonts shrink and labels abbreviate (`Best.`/`Angem.`/`Open`) for 3+ lanes
 - Duration constant: `WEEKLY_EVENT_DURATION_HOURS` (fractional supported)
 
-### Starter Message Text
+### Week selection (`weekly_overview.py`)
+
+- `week_bounds(today, *, week_offset=0)` is the single source of truth — returns `(monday, sunday, week_key)` for the ISO week at `today + week_offset weeks`. `week_key` is built from the **target** monday's `isocalendar()`, not today's, so year/week rollovers stay correct
+- `current_week_bounds(today)` / `next_week_bounds(today)` are thin wrappers (`week_offset=0` / `1`)
+- `collect_week_events(events, today, *, week_offset=0)` mirrors the same pattern — pass `week_offset=1` for next-week events
+
+### Starter / reply message text
 
 `format_weekly_summary(monday, num_events)` returns:
 
@@ -250,21 +258,26 @@ N Raid(s) geplant
 
 (`en-UK` produces `Raid Overview — CW <nn> / <year>` and `N raid(s) scheduled`.)
 
-Sent as the starter message `content` on create, re-sent on every PATCH so it tracks the current week.
+Computed independently for current and next week. Sent as each message's `content` on create, re-sent on every PATCH so each tracks its own week.
 
 ### Mapping Schema (`discord_weekly_mapping`)
 
 Single dict (not keyed by event id):
 
 - `channel_id`: Discord thread ID (stable across weeks)
-- `message_id`: starter message ID (stable — the image is PATCHed in place)
-- `hash`: last rendered content hash
-- `week_key`: ISO week string like `2026-W16`
+- `message_id`: starter message ID — always equals `channel_id`; image PATCHed in place each week (current week)
+- `hash`: last rendered hash for current-week image
+- `week_key`: ISO week string like `2026-W16` for the starter
+- `next_message_id`: reply message ID — PATCHed in place each week (next week). Posted lazily on first sync after upgrade; re-posted only if 404 on PATCH
+- `next_hash`: last rendered hash for next-week image
+- `next_week_key`: ISO week string for the reply (always `current week + 1`)
 - `sv_mtime`: SavedVariables mtime embedded in the image filename
+
+Legacy mappings missing the `next_*` fields trigger a one-time POST of the next-week reply on first sync — fully backwards-compatible.
 
 ### Filename
 
-`weekly_<week_key>_h<hash>_t<sv_mtime>.png` — same `_h..._t...` convention as per-event roster images.
+`weekly_<week_key>_h<hash>_t<sv_mtime>.png` — same `_h..._t...` convention as per-event roster images. Both the current-week and next-week images use this scheme with their own `week_key` and `hash`.
 
 ---
 
@@ -444,14 +457,17 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 
 ### Weekly Overview
 
-- Thread name comes from `get_weekly_thread_name()` (active-language) — don't change it per week; only the starter message content and image change
-- The PATCH target is always `channel_id`, never `mapping["message_id"]`. Discord guarantees that the starter-message id of a forum thread equals the thread id, so trust the invariant — a stored `message_id` that differs is a sign of a buggy past run and must not be honoured, or two clients will diverge on different messages
-- When adopting an existing thread, iterate `candidate_weekly_thread_names()` so a language switch picks up an old-language thread instead of creating a new one
-- After every sync, call `cleanup_weekly_thread_orphans(channel_id)` so non-starter weekly images posted by past buggy clients are removed. The filter must require both `id != channel_id` *and* an attachment matching `weekly_*.png` so user messages and per-event roster images stay untouched
+- Thread name comes from `get_weekly_thread_name()` (active-language) — don't change it per week; only the message contents and images change
+- The starter PATCH target is always `channel_id`, never `mapping["message_id"]`. Discord guarantees that the starter-message id of a forum thread equals the thread id, so trust the invariant — a stored `message_id` that differs is a sign of a buggy past run and must not be honoured, or two clients will diverge on different messages
+- The reply (`next_message_id`) is *not* the starter — PATCH it directly and only repost if `message_exists` returns false. Never assume `next_message_id == channel_id`
+- When adopting an existing thread, iterate `candidate_weekly_thread_names()` so a language switch picks up an old-language thread instead of creating a new one. Adoption only recovers the **thread** — the next-week reply still has to be posted on the first sync (no scan-and-adopt for the reply, since we don't have a stable per-week marker to match on)
+- After every sync, call `cleanup_weekly_thread_orphans(channel_id, keep_ids={next_message_id})`. The filter must require both `id != channel_id` *and* `id not in keep_ids` *and* an attachment matching `weekly_*.png` so user messages, per-event roster images, and the legitimate next-week reply stay untouched
 - Both `execute_weekly_sync` and `compute_weekly_sync_plan` must respect the stale-data guard (`_is_local_data_stale`)
-- `compute_weekly_hash` must cover every field the image displays, so content changes always trigger a PATCH. Translated labels are *not* part of the hash — image content depends on language but adopting the existing thread + PATCHing avoids churn
+- `compute_weekly_hash` must cover every field the image displays, including `max_roster_size(raid)` (so the full-raid green highlight invalidates correctly when a raid name is renamed to a different-sized raid). Translated labels are *not* part of the hash — image content depends on language but adopting the existing thread + PATCHing avoids churn
+- Compute hashes **per week** (current vs. next get their own hash) and skip per-message — a content change in next week should never PATCH the starter and vice versa
 - `render_weekly_overview` must handle fractional `WEEKLY_EVENT_DURATION_HOURS` (e.g. 2.5) — coerce to int where values flow to canvas dimensions
 - Lane assignment uses event start/end in minutes; parallel raids in the same day column must never overlap visually
+- "Signed" and "Open" in event cells mean **just signed** (`evt.signed_count`) and **`max(0, max_roster - confirmed)`** respectively — don't sum confirmed+signed under any label
 
 ### UI
 

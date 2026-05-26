@@ -30,6 +30,7 @@ from fgc_sync.services.weekly_overview import (
     current_week_bounds,
     format_weekly_summary,
     get_weekly_thread_name,
+    next_week_bounds,
     render_weekly_overview,
 )
 
@@ -751,31 +752,43 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     return result
 
 
-def _collect_week_events_for_overview(
+def _load_events_for_overview(
     config: Config,
-) -> tuple[list[CalendarEvent], list[str]]:
-    """Return (events_in_current_week, errors). No roster filter, no date-window filter."""
+) -> tuple[dict[str, CalendarEvent], list[str]]:
+    """Return ({event_id: event}, errors). No roster filter, no date-window filter."""
     errors: list[str] = []
     sv_path = config.saved_variables_path
     if not sv_path or not sv_path.exists():
         errors.append(f"SavedVariables not found: {sv_path}")
-        return [], errors
+        return {}, errors
 
     guild_key = config.get("guild_key")
     if not guild_key:
         errors.append("Guild key not configured")
-        return [], errors
+        return {}, errors
 
     try:
         db = parse_saved_variables(sv_path)
     except Exception as e:
         errors.append(f"Failed to parse SavedVariables: {e}")
-        return [], errors
+        return {}, errors
 
     wow_events = extract_events(db, guild_key)
     deleted_ids = get_deleted_event_ids(db, guild_key)
     by_id = {e.event_id: e for e in wow_events if e.event_id not in deleted_ids}
-    return collect_week_events(by_id), errors
+    return by_id, errors
+
+
+def _collect_week_events_for_overview(
+    config: Config,
+    *,
+    week_offset: int = 0,
+) -> tuple[list[CalendarEvent], list[str]]:
+    """Return (events_in_week, errors) for the requested ISO week relative to today."""
+    by_id, errors = _load_events_for_overview(config)
+    if errors:
+        return [], errors
+    return collect_week_events(by_id, week_offset=week_offset), errors
 
 
 def compute_weekly_sync_plan(
@@ -787,54 +800,91 @@ def compute_weekly_sync_plan(
     if not discord.is_configured:
         return plan
 
-    events, errors = _collect_week_events_for_overview(config)
+    by_id, errors = _load_events_for_overview(config)
     plan.errors.extend(errors)
     if errors:
         return plan
 
-    monday, sunday, week_key = current_week_bounds()
-    content_hash = compute_weekly_hash(events)
     mapping: dict = config.get("discord_weekly_mapping", {}) or {}
-    info = (
-        f"{len(events)} raid(s), week {week_key} "
-        f"({monday.isoformat()}..{sunday.isoformat()})"
-    )
-
     weekly_name = get_weekly_thread_name()
+
+    cur_monday, cur_sunday, cur_week_key = current_week_bounds()
+    cur_events = collect_week_events(by_id, week_offset=0)
+    cur_hash = compute_weekly_hash(cur_events)
+    cur_info = (
+        f"{len(cur_events)} raid(s), week {cur_week_key} "
+        f"({cur_monday.isoformat()}..{cur_sunday.isoformat()})"
+    )
     if not mapping.get("channel_id"):
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.CREATE,
                 "weekly_overview",
                 weekly_name,
-                monday.isoformat(),
+                cur_monday.isoformat(),
                 "",
-                "Overview",
-                info,
+                "Overview (current week)",
+                cur_info,
             )
         )
-    elif mapping.get("hash") != content_hash or mapping.get("week_key") != week_key:
+    elif mapping.get("hash") != cur_hash or mapping.get("week_key") != cur_week_key:
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.UPDATE,
                 "weekly_overview",
                 weekly_name,
-                monday.isoformat(),
+                cur_monday.isoformat(),
                 "",
-                "Overview",
-                info,
+                "Overview (current week)",
+                cur_info,
             )
         )
+
+    nxt_monday, nxt_sunday, nxt_week_key = next_week_bounds()
+    nxt_events = collect_week_events(by_id, week_offset=1)
+    nxt_hash = compute_weekly_hash(nxt_events)
+    nxt_info = (
+        f"{len(nxt_events)} raid(s), week {nxt_week_key} "
+        f"({nxt_monday.isoformat()}..{nxt_sunday.isoformat()})"
+    )
+    if not mapping.get("next_message_id"):
+        plan.entries.append(
+            SyncPlanEntry(
+                SyncAction.CREATE,
+                "weekly_overview",
+                weekly_name,
+                nxt_monday.isoformat(),
+                "",
+                "Overview (next week)",
+                nxt_info,
+            )
+        )
+    elif (
+        mapping.get("next_hash") != nxt_hash
+        or mapping.get("next_week_key") != nxt_week_key
+    ):
+        plan.entries.append(
+            SyncPlanEntry(
+                SyncAction.UPDATE,
+                "weekly_overview",
+                weekly_name,
+                nxt_monday.isoformat(),
+                "",
+                "Overview (next week)",
+                nxt_info,
+            )
+        )
+
     return plan
 
 
 def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
-    """Create or update the single ``Wöchentliche Raid Übersicht`` thread."""
+    """Create or update the permanent weekly-overview thread (current + next week)."""
     result = SyncResult()
     if not discord.is_configured:
         return result
 
-    events, errors = _collect_week_events_for_overview(config)
+    by_id, errors = _load_events_for_overview(config)
     result.errors.extend(errors)
     if errors:
         return result
@@ -844,17 +894,23 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     if _is_local_data_stale(config, discord):
         return result
 
-    monday, _sunday, week_key = current_week_bounds()
-    content_hash = compute_weekly_hash(events)
+    cur_monday, _cur_sunday, cur_week_key = current_week_bounds()
+    nxt_monday, _nxt_sunday, nxt_week_key = next_week_bounds()
+    cur_events = collect_week_events(by_id, week_offset=0)
+    nxt_events = collect_week_events(by_id, week_offset=1)
+    cur_hash = compute_weekly_hash(cur_events)
+    nxt_hash = compute_weekly_hash(nxt_events)
     mapping: dict = config.get("discord_weekly_mapping", {}) or {}
 
     sv_path = config.saved_variables_path
     sv_mtime = int(sv_path.stat().st_mtime) if sv_path and sv_path.exists() else 0
 
-    filename = f"weekly_{week_key}_h{content_hash}_t{sv_mtime}.png"
+    cur_filename = f"weekly_{cur_week_key}_h{cur_hash}_t{sv_mtime}.png"
+    nxt_filename = f"weekly_{nxt_week_key}_h{nxt_hash}_t{sv_mtime}.png"
 
     try:
-        image_bytes = render_weekly_overview(events, monday)
+        cur_image = render_weekly_overview(cur_events, cur_monday)
+        nxt_image = render_weekly_overview(nxt_events, nxt_monday)
     except Exception as e:
         result.errors.append(f"Weekly overview render failed: {e}")
         log.error("Weekly overview render failed: %s", e)
@@ -877,13 +933,16 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             log.warning("Weekly overview: thread lookup failed: %s", e)
             channel_id = None
 
-    summary = format_weekly_summary(monday, len(events))
+    cur_summary = format_weekly_summary(cur_monday, len(cur_events))
+    nxt_summary = format_weekly_summary(nxt_monday, len(nxt_events))
     weekly_name = get_weekly_thread_name()
+    next_message_id: str | None = mapping.get("next_message_id")
 
     try:
+        # ---- Starter message (current week) ----
         if not channel_id:
-            channel_id, message_id = discord.create_weekly_thread(
-                weekly_name, image_bytes, filename, summary
+            channel_id, _starter_id = discord.create_weekly_thread(
+                weekly_name, cur_image, cur_filename, cur_summary
             )
             result.created += 1
         else:
@@ -891,41 +950,61 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             # Discord forum-channel invariant: the starter-message id of a
             # forum thread equals the thread id itself. We always target the
             # starter, even if a previous (buggy) run stored a different
-            # message_id in mapping — that lets a second client with a
-            # stale mapping converge on the starter instead of forever
-            # PATCHing an orphan reply it once posted by mistake.
-            message_id = channel_id
+            # message_id in mapping.
+            starter_id = channel_id
             mapping_was_correct = mapping.get("message_id") == channel_id
-            same_week = mapping.get("week_key") == week_key
-            same_hash = mapping.get("hash") == content_hash
+            same_week = mapping.get("week_key") == cur_week_key
+            same_hash = mapping.get("hash") == cur_hash
 
             if mapping_was_correct and same_week and same_hash:
                 result.skipped += 1
-            elif discord.message_exists(channel_id, message_id):
-                # Edit image + summary text in place
+            elif discord.message_exists(channel_id, starter_id):
                 discord.update_weekly_image(
-                    channel_id, message_id, image_bytes, filename, summary
+                    channel_id, starter_id, cur_image, cur_filename, cur_summary
                 )
                 result.updated += 1
             else:
                 # Forum starter shouldn't disappear without the thread also
                 # being gone — but if it does, post a fresh image.
-                message_id = discord.post_weekly_image(
-                    channel_id, image_bytes, filename
-                )
+                discord.post_weekly_image(channel_id, cur_image, cur_filename)
                 result.created += 1
 
-            # Delete any leftover non-starter weekly images in the thread
-            # (residue from clients that posted replies before this fix).
-            try:
-                removed = discord.cleanup_weekly_thread_orphans(channel_id)
-                if removed:
-                    log.info(
-                        "Weekly overview: cleaned up %d orphan reply image(s)",
-                        removed,
-                    )
-            except Exception as e:
-                log.warning("Weekly overview: orphan cleanup failed: %s", e)
+        # ---- Second message (next week) ----
+        # Existing message: PATCH if anything changed, else skip.
+        # Missing or gone: POST a new reply.
+        if next_message_id and discord.message_exists(channel_id, next_message_id):
+            same_week = mapping.get("next_week_key") == nxt_week_key
+            same_hash = mapping.get("next_hash") == nxt_hash
+            if same_week and same_hash:
+                result.skipped += 1
+            else:
+                discord.update_weekly_image(
+                    channel_id,
+                    next_message_id,
+                    nxt_image,
+                    nxt_filename,
+                    nxt_summary,
+                )
+                result.updated += 1
+        else:
+            next_message_id = discord.post_weekly_image(
+                channel_id, nxt_image, nxt_filename, content=nxt_summary
+            )
+            result.created += 1
+
+        # Delete any leftover weekly images in the thread that aren't the
+        # starter or the next-week message (residue from older clients).
+        try:
+            removed = discord.cleanup_weekly_thread_orphans(
+                channel_id, keep_ids={next_message_id} if next_message_id else None
+            )
+            if removed:
+                log.info(
+                    "Weekly overview: cleaned up %d orphan reply image(s)",
+                    removed,
+                )
+        except Exception as e:
+            log.warning("Weekly overview: orphan cleanup failed: %s", e)
     except Exception as e:
         result.errors.append(f"Weekly overview sync failed: {e}")
         log.error("Weekly overview sync failed: %s", e)
@@ -935,9 +1014,12 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         "discord_weekly_mapping",
         {
             "channel_id": channel_id,
-            "message_id": message_id,
-            "hash": content_hash,
-            "week_key": week_key,
+            "message_id": channel_id,
+            "hash": cur_hash,
+            "week_key": cur_week_key,
+            "next_message_id": next_message_id,
+            "next_hash": nxt_hash,
+            "next_week_key": nxt_week_key,
             "sv_mtime": sv_mtime,
         },
     )
