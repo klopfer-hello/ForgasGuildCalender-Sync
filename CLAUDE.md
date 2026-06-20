@@ -349,6 +349,10 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 
 `Config.begin_transaction()` / `commit_transaction()` / `rollback_transaction()` buffer writes during setup so cancelling doesn't leave partial config on disk.
 
+### Config Durability
+
+`Config.save()` writes **atomically**: serialize → roll the last-known-good config into `config.json.bak` → write a temp file (`fsync`) → `os.replace` into place (atomic on Windows + POSIX), so an interrupted write can never leave a half-written or zero-length config. `Config.load()` is **corruption-tolerant** via `_read_json_dict`: a missing/empty/all-NUL/whitespace/invalid file is recovered from `config.json.bak`, the corrupt file is preserved as `config.json.corrupt` for forensics, and if no valid backup exists it starts fresh instead of crashing. The backup is never overwritten from a corrupt source. (Guards against the filesystem zero-fill seen in `[[incident-2026-05-calendar-wipe]]`.)
+
 ### Credential Files
 
 - `token.json` — Google OAuth2 token (auto-refreshed)
