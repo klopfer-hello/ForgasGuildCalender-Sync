@@ -21,7 +21,12 @@ from PySide6.QtWidgets import (
 
 from fgc_sync import i18n
 from fgc_sync.i18n import t
-from fgc_sync.services.config import SAVED_VARIABLES_FILENAME, Config, decode_setup_code
+from fgc_sync.services.config import (
+    SAVED_VARIABLES_FILENAME,
+    Config,
+    decode_setup_code,
+    default_wow_path,
+)
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import list_guild_keys, parse_saved_variables
 
@@ -96,7 +101,7 @@ class WowPathPage(QWizardPage):
 
         layout.addStretch()
 
-        if existing := self._config.get("wow_path", ""):
+        if existing := (self._config.get("wow_path", "") or default_wow_path()):
             self._path_edit.setText(existing)
 
         self.retranslate()
