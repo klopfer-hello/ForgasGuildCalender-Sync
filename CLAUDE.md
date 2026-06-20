@@ -8,8 +8,10 @@ System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/e
 
 - Python >= 3.12 (tested on 3.14)
 - **Windows GUI**: PySide6 system tray + dialogs, entry point `fgc-sync`
+- **macOS GUI**: same PySide6 tray app; data under `~/Library/Application Support`, autostart via a `~/Library/LaunchAgents` plist (`launchctl`), self-update from a `.dmg` (`hdiutil` mount + `.app` bundle swap). Release CI builds an unsigned `FGC-Sync.dmg` on `macos-latest`
 - **Linux/headless CLI**: no Qt required, entry point `fgc-sync-cli`, designed for cron
 - Install: `pip install -e .` (CLI) or `pip install -e ".[gui]"` (with PySide6)
+- Platform-specific paths/behaviour is branched on `os.name == "nt"` and `sys.platform == "darwin"` in `config.py` (`_app_data_dir`, `default_wow_path`), `tray_icon.py` (autostart), `updater.py` (`_update_dmg` vs `_update_exe`), and `roster_image.py` (fonts)
 
 ## Source Data
 
