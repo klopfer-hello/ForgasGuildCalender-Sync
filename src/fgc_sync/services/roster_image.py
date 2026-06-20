@@ -62,11 +62,20 @@ _role_icon_cache: dict[str, Image.Image] = {}
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     import os
+    import sys
 
     candidates = []
     if os.name == "nt":
         candidates = [
             "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+            if bold
+            else "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
         ]
     else:
         if bold:

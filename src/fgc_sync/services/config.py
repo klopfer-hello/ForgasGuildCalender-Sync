@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import zlib
 from pathlib import Path
 
@@ -18,11 +19,27 @@ SAVED_VARIABLES_FILENAME = "ForgasGuildCalendar.lua"
 def _app_data_dir() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     app_dir = base / APP_NAME
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir
+
+
+def default_wow_path() -> str:
+    """Best-guess WoW (TBC Anniversary) install directory for first-time setup.
+
+    Points at the ``_anniversary_`` flavour folder (the one containing ``WTF``),
+    which is what the rest of setup expects. Returns ``""`` on platforms where we
+    have no sensible guess so the field stays blank.
+    """
+    if sys.platform == "darwin":
+        return "/Applications/World of Warcraft/_anniversary_"
+    if os.name == "nt":
+        return "C:\\Program Files (x86)\\World of Warcraft\\_anniversary_"
+    return ""
 
 
 _SETUP_CODE_PREFIX = "fgc1-"

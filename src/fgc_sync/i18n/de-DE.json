@@ -212,6 +212,7 @@
     "sync_now": "Jetzt synchronisieren",
     "settings": "Einstellungen...",
     "start_with_windows": "Mit Windows starten",
+    "start_at_login": "Beim Anmelden starten",
     "open_log_file": "Log-Datei öffnen",
     "update_to": "Auf v{version} aktualisieren...",
     "about": "Über...",

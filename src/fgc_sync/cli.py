@@ -20,6 +20,7 @@ from fgc_sync.services.config import (
     SAVED_VARIABLES_FILENAME,
     Config,
     decode_setup_code,
+    default_wow_path,
     encode_setup_code,
 )
 from fgc_sync.services.discord_poster import DiscordPoster
@@ -71,7 +72,7 @@ def _run_cli_setup(config: Config) -> bool:
     # 1. WoW path
     wow_input = questionary.path(
         t("cli.setup.wow_dir_prompt"),
-        default=config.get("wow_path", ""),
+        default=config.get("wow_path", "") or default_wow_path(),
         only_directories=True,
     ).ask()
     if wow_input is None:

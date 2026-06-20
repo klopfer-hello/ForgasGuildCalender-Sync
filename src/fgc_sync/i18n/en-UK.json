@@ -212,6 +212,7 @@
     "sync_now": "Sync Now",
     "settings": "Settings...",
     "start_with_windows": "Start with Windows",
+    "start_at_login": "Start at Login",
     "open_log_file": "Open Log File",
     "update_to": "Update to v{version}...",
     "about": "About...",

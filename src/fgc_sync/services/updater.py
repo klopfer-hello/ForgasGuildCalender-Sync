@@ -49,6 +49,13 @@ def detect_install_mode() -> InstallMode:
     return InstallMode.PIP
 
 
+def _frozen_asset_name() -> str:
+    """Name of the release asset for the current frozen platform."""
+    if sys.platform == "darwin":
+        return "FGC-Sync.dmg"
+    return "FGC-Sync.exe"
+
+
 def check_for_update() -> UpdateInfo | None:
     """Query GitHub for the latest release. Returns None on network error."""
     if __version__ == "dev":
@@ -73,8 +80,9 @@ def check_for_update() -> UpdateInfo | None:
 
     download_url = None
     if detect_install_mode() == InstallMode.EXE:
+        asset_name = _frozen_asset_name()
         for asset in data.get("assets", []):
-            if asset.get("name") == "FGC-Sync.exe":
+            if asset.get("name") == asset_name:
                 download_url = asset["browser_download_url"]
                 break
 
@@ -98,6 +106,8 @@ def perform_update(info: UpdateInfo) -> str:
 
     if mode == InstallMode.PIP:
         return _update_pip()
+    elif sys.platform == "darwin":
+        return _update_dmg(info)
     else:
         return _update_exe(info)
 
@@ -205,6 +215,87 @@ def _update_exe(info: UpdateInfo) -> str:
     subprocess.Popen(
         ["cmd", "/c", str(script_path)],
         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+
+    return "exit"
+
+
+def _update_dmg(info: UpdateInfo) -> str:
+    """Download a new .dmg and write a swap script to replace the .app after exit.
+
+    ``sys.executable`` inside a frozen macOS app is
+    ``…/FGC-Sync.app/Contents/MacOS/FGC-Sync``, so the bundle to replace is three
+    parents up. The swap script mounts the dmg, replaces the bundle, detaches,
+    and relaunches the app (unlike the Windows exe swap, relaunching is safe here).
+    """
+    if not info.download_url:
+        raise RuntimeError("No download URL for this release.")
+
+    exe_path = Path(sys.executable)
+    try:
+        app_path = exe_path.parents[2]  # .../FGC-Sync.app
+    except IndexError as e:
+        raise RuntimeError("Could not locate the .app bundle to update.") from e
+    if app_path.suffix != ".app":
+        raise RuntimeError(f"Unexpected bundle layout, refusing to update: {app_path}")
+
+    dmg_path = Path(tempfile.gettempdir()) / "fgc_sync_update.dmg"
+
+    log.info("Downloading %s", info.download_url)
+    resp = requests.get(
+        info.download_url,
+        headers=_HEADERS,
+        stream=True,
+        timeout=(15, 300),
+        allow_redirects=True,
+    )
+    resp.raise_for_status()
+
+    expected_size = int(resp.headers.get("content-length", 0)) or None
+    with open(dmg_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            f.write(chunk)
+
+    actual_size = dmg_path.stat().st_size
+    if expected_size and actual_size != expected_size:
+        dmg_path.unlink()
+        raise RuntimeError(
+            f"Download size mismatch: expected {expected_size}, got {actual_size}"
+        )
+
+    if actual_size < 1_000_000:
+        dmg_path.unlink()
+        raise RuntimeError(
+            f"Downloaded file too small ({actual_size} bytes), aborting update."
+        )
+
+    script_path = Path(tempfile.gettempdir()) / "fgc_sync_update.sh"
+    mount_point = Path(tempfile.gettempdir()) / "fgc_sync_update_mnt"
+    script = (
+        "#!/bin/bash\n"
+        "set -e\n"
+        "sleep 3\n"
+        f'MOUNT="{mount_point}"\n'
+        'mkdir -p "$MOUNT"\n'
+        f'hdiutil attach "{dmg_path}" -nobrowse -mountpoint "$MOUNT"\n'
+        'NEW_APP=$(/usr/bin/find "$MOUNT" -maxdepth 1 -name "*.app" | head -n 1)\n'
+        'if [ -n "$NEW_APP" ]; then\n'
+        f'  rm -rf "{app_path}"\n'
+        f'  cp -R "$NEW_APP" "{app_path}"\n'
+        "fi\n"
+        'hdiutil detach "$MOUNT" || true\n'
+        'rmdir "$MOUNT" 2>/dev/null || true\n'
+        f'rm -f "{dmg_path}"\n'
+        f'open "{app_path}"\n'
+        'rm -f "$0"\n'
+    )
+    script_path.write_text(script, encoding="utf-8")
+    script_path.chmod(0o755)
+
+    subprocess.Popen(
+        ["/bin/bash", str(script_path)],
+        start_new_session=True,
         close_fds=True,
     )
 
