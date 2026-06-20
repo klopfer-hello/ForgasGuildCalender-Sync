@@ -120,6 +120,87 @@ class TestConfigLoadSave:
         assert path.exists()
 
 
+class TestConfigCorruptionRecovery:
+    """Atomic writes + corruption-tolerant load (the zero-fill incident)."""
+
+    def _migrated(self, **extra):
+        # A config already at the current schema so migrations don't rewrite it.
+        base = {
+            "schema_version": config_migrations.CURRENT_SCHEMA_VERSION,
+            "language": "en-UK",
+        }
+        base.update(extra)
+        return base
+
+    def test_zero_filled_config_recovers_from_backup(self, tmp_path):
+        path = tmp_path / "config.json"
+        backup = tmp_path / "config.json.bak"
+        backup.write_text(json.dumps(self._migrated(guild_key="V3|G")), "utf-8")
+        # Filesystem-corruption signature: correct length, all NUL bytes.
+        path.write_bytes(b"\x00" * 4096)
+
+        cfg = Config(path)
+
+        assert cfg.get("guild_key") == "V3|G"
+        # config.json was rewritten as valid JSON from the backup
+        assert json.loads(path.read_text("utf-8"))["guild_key"] == "V3|G"
+        # the corrupt file was preserved for forensics
+        assert (tmp_path / "config.json.corrupt").exists()
+        # the good backup was NOT clobbered during recovery
+        assert json.loads(backup.read_text("utf-8"))["guild_key"] == "V3|G"
+
+    def test_corrupt_config_no_backup_starts_fresh(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_bytes(b"\x00" * 100)
+
+        cfg = Config(path)
+
+        assert cfg.get("anything") is None
+        assert (tmp_path / "config.json.corrupt").exists()
+
+    def test_empty_file_starts_fresh(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("", encoding="utf-8")
+        cfg = Config(path)
+        assert cfg.get("anything") is None
+
+    def test_whitespace_only_file_recovers_from_backup(self, tmp_path):
+        path = tmp_path / "config.json"
+        backup = tmp_path / "config.json.bak"
+        backup.write_text(json.dumps(self._migrated(key="v")), "utf-8")
+        path.write_text("   \n\t  ", encoding="utf-8")
+        cfg = Config(path)
+        assert cfg.get("key") == "v"
+
+    def test_save_keeps_rolling_backup(self, tmp_path):
+        path = tmp_path / "config.json"
+        cfg = Config(path)
+        cfg.set("key", "first")  # creates config.json
+        cfg.set("key", "second")  # rolls "first" into .bak
+        backup = tmp_path / "config.json.bak"
+        assert backup.exists()
+        assert json.loads(backup.read_text("utf-8"))["key"] == "first"
+        assert json.loads(path.read_text("utf-8"))["key"] == "second"
+
+    def test_atomic_write_leaves_no_temp_files(self, tmp_path):
+        path = tmp_path / "config.json"
+        cfg = Config(path)
+        cfg.set("a", 1)
+        cfg.set("b", 2)
+        leftovers = list(tmp_path.glob(".config-*.tmp"))
+        assert leftovers == []
+
+    def test_recovered_config_survives_restart(self, tmp_path):
+        path = tmp_path / "config.json"
+        backup = tmp_path / "config.json.bak"
+        backup.write_text(json.dumps(self._migrated(guild_key="V3|G")), "utf-8")
+        path.write_bytes(b"\x00" * 512)
+        Config(path)  # recovers and rewrites config.json
+        # A fresh instance loads cleanly from the rewritten file
+        cfg2 = Config(path)
+        assert cfg2.get("guild_key") == "V3|G"
+
+
 class TestConfigTransaction:
     def test_commit_persists(self, tmp_path):
         path = tmp_path / "config.json"
