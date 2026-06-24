@@ -179,7 +179,9 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 - **Ping the difference, not the union**: `to_ping = confirmed - (local_pinged ∪ history_pinged).keys()`; `ping_members` returns `{name: message_id}` for resolved names — they all share one message id since they're posted in one message
 - **Unping the difference too**: members in `pinged` who are no longer confirmed have their `<@id>` mention edited out of the original ping message via `remove_mentions` (replaced with `~~@<name>~~`, `allowed_mentions: {parse: []}`). Discord does not re-notify on edits, so the other members in the same message are not re-pinged. Names with an empty message id (legacy v1 entries pre-migration) are dropped from `pinged` without an edit
 - Re-adding a previously-removed member triggers a fresh "Newly confirmed" ping — they were dropped from `pinged` on removal, so the diff sees them as new
+- **Self-heal on 404**: a mapped thread that was deleted externally (another client's cleanup, manual delete) is detected via `ensure_unarchived` returning `False` (404 only; 403 returns `True` to avoid duplicating an inaccessible thread) and **recreated** like a new event — clients never have to hand-clear `discord_message_mapping`. Mirrors Google's "verify before trust"
 - Cleanup deletes threads for removed events and events older than `EXPIRED_EVENT_HOURS` (24h); 404 on already-deleted threads is silently ignored
+- **Bulk-deletion guard** (`_BULK_DELETION_GUARD_MIN=3`, `_BULK_DELETION_GUARD_FRACTION=0.5`): the all-empty `no_events_guard` only catches a *fully* empty parse. A divergent/partial read (another client on a different namespace, or whose SavedVariables lacks this guild's events) yields a non-empty-but-wrong set that marks many live events "removed". So if a single sync would delete `>= MIN` threads *and* `> FRACTION` of the mapping, the "not in events / deleted" removals are skipped entirely (only the 24h-expired cleanup runs) and the mapping is preserved. `compute_discord_sync_plan` mirrors this so the dry-run doesn't show removals the real sync would refuse
 
 ### Forum Threads
 
@@ -209,6 +211,15 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 - Image dedup: `_find_image_in_thread` scans up to 100 messages before posting a new image
 - Ping dedup: `get_already_pinged_names` scans thread history for prior bot pings
 - Stale-data guard: clients with older SavedVariables skip writing
+- Version coordination (see below): older clients defer to newer ones
+
+### Cross-Client Version Coordination (`coordinate_client_versions`, `services/client_registry.py`)
+
+Called by the controller and CLI **before** the Discord/weekly syncs; if it returns `should_defer`, both are skipped that cycle. Backward-compatible — pre-2.10.0 clients never read or write the control message.
+
+- **Client registry**: a single bot message in the permanent weekly thread, located by the `[FGC-SYNC-REGISTRY]` marker (id not relied upon — re-scanned each cycle, recovered if lost). Content is a JSON block `{"clients": {"<key>": {"version", "names", "last_seen"}}}`. `<key>` is the client's first WoW character name; `names` are all its characters (auto-detected). Each cycle a client upserts its own entry — **even when deferring**, so it stays visible and pingable as outdated
+- **Defer-to-newer gate**: `newer_client_active` — if any *fresh* entry (seen within `FRESHNESS_HOURS=24`, excluding self) has a higher version, this client defers. Mirrors the stale-data guard but on version rather than mtime. Note: only protects clients that run ≥2.10.0 code; already-deployed older clients can't be retroactively gated
+- **New-version notice with operator pings**: only the **newest active** client announces (single poster). Target = newest known version (latest GitHub release if newer than us, else our own). `outdated_client_names` collects the characters of fresh clients below the target; `post_version_notice` resolves them to Discord members (same matching as roster pings) and pings them with `discord.update_notice`. Deduped per target version via the `[FGC-SYNC-UPDATE]<version>` marker (`version_notice_exists`). `dev` version skips coordination entirely; all steps are best-effort and never raise into the sync
 
 ### Mapping Schema (`discord_message_mapping[event_id]`)
 
@@ -232,6 +243,8 @@ Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `W
 - **Cross-language adoption**: when no thread is in mapping, iterate `candidate_weekly_thread_names()` so an old-language thread is adopted instead of duplicated
 - **Orphan cleanup**: after each successful sync, `cleanup_weekly_thread_orphans(channel_id, keep_ids={next_message_id})` scans up to 100 messages and deletes any `weekly_*.png` attachment that isn't the starter or the next-week reply. Requires Manage Messages on the forum if the orphan was authored by a different bot user; messages the bot itself authored are deletable without it. **`keep_ids` must always include `next_message_id`** or the next-week reply gets deleted on every sync
 - Per-message skip: starter skips when `{hash, week_key}` for current week are unchanged AND stored `message_id == channel_id`; reply skips when `{next_hash, next_week_key}` are unchanged
+- **Empty-week guard** (`_would_blank_remote_week`, `EMPTY_WEEK_HASH`): never let a zero-event local render overwrite a populated remote image. Before PATCHing starter or reply, if the local hash is the empty-week hash *and* the message's current attachment hash (read live via `get_weekly_image_hash`, independent of any local mapping) is non-empty, the write is skipped. Guards against a stale/incomplete second client blanking a good overview. Both `execute_weekly_sync` and `compute_weekly_sync_plan` apply it
+- **Self-heal on 404**: if the mapped weekly thread was deleted externally, `ensure_unarchived` returns `False` and `channel_id` is cleared so the adoption/creation path recreates it instead of erroring on every PATCH
 
 ### Image (`weekly_overview.py` → `render_weekly_overview`)
 
