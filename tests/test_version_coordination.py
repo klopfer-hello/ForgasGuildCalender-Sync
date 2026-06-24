@@ -1,10 +1,9 @@
-"""Tests for coordinate_client_versions — the defer-to-newer gate and the
-release changelog posted to the dedicated updates thread (pinging config users).
-"""
+"""Tests for coordinate_client_versions — the defer-to-newer gate (read from the
+version embedded in forum image filenames) and the release changelog posted to
+the dedicated updates thread (pinging config-provided users)."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,11 +12,7 @@ from fgc_sync.services import sync_engine
 from fgc_sync.services.config import Config
 
 
-def _now_iso():
-    return datetime.now(UTC).isoformat()
-
-
-def _update_info(version="2.11.0", notes="- fixed stuff"):
+def _update_info(version="2.11.1", notes="- fixed stuff"):
     info = MagicMock()
     info.latest_version = version
     info.release_notes = notes
@@ -33,16 +28,15 @@ def config(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _stub_env(monkeypatch):
-    monkeypatch.setattr(sync_engine, "__version__", "2.10.0")
-    monkeypatch.setattr(sync_engine, "_client_character_names", lambda config: ["Me"])
+    monkeypatch.setattr(sync_engine, "__version__", "2.11.1")
     monkeypatch.setattr(sync_engine, "check_for_update", lambda: _update_info())
 
 
-def _discord(registry):
+def _discord(max_remote_version=None):
     d = MagicMock()
     d.is_configured = True
-    d.read_client_registry = MagicMock(return_value=(registry, "reg-msg"))
-    d.write_client_registry = MagicMock(return_value="reg-msg")
+    d.delete_registry_messages = MagicMock(return_value=0)
+    d.get_max_remote_version = MagicMock(return_value=max_remote_version)
     d.clear_thread_cache = MagicMock()
     d.ensure_unarchived = MagicMock(return_value=True)
     d.find_thread_by_name = MagicMock(return_value=None)
@@ -52,43 +46,52 @@ def _discord(registry):
     return d
 
 
-def test_defers_when_newer_client_active(config):
-    registry = {
-        "clients": {
-            "other": {"version": "2.11.0", "names": ["Alice"], "last_seen": _now_iso()}
-        }
-    }
-    discord = _discord(registry)
+def test_defers_when_newer_version_in_filenames(config):
+    discord = _discord(max_remote_version="2.12.0")  # newer client posted images
 
     should_defer, errors = sync_engine.coordinate_client_versions(config, discord)
 
     assert should_defer is True
     assert errors == []
-    discord.write_client_registry.assert_called_once()  # still registers itself
-    # A deferring client does NOT post the changelog (newer client handles it).
+    # A deferring client does not announce the changelog.
     discord.create_changelog_thread.assert_not_called()
     discord.post_changelog.assert_not_called()
 
 
+def test_no_defer_when_remote_not_newer(config):
+    discord = _discord(max_remote_version="2.11.0")
+
+    should_defer, _ = sync_engine.coordinate_client_versions(config, discord)
+
+    assert should_defer is False
+
+
+def test_cleans_up_leftover_registry_message(config):
+    discord = _discord()
+
+    sync_engine.coordinate_client_versions(config, discord)
+
+    discord.delete_registry_messages.assert_called_once_with("weekly-thread")
+
+
 def test_creates_updates_thread_with_changelog_and_config_pings(config):
     config.set("discord_update_ping_user_ids", ["111", "222"])
-    discord = _discord({})
+    discord = _discord()
 
-    should_defer, errors = sync_engine.coordinate_client_versions(config, discord)
+    should_defer, _ = sync_engine.coordinate_client_versions(config, discord)
 
     assert should_defer is False
     discord.create_changelog_thread.assert_called_once()
     name, body, ping_ids, version = discord.create_changelog_thread.call_args.args
-    assert version == "2.11.0"
-    assert "2.11.0" in body and "fixed stuff" in body
+    assert version == "2.11.1"
+    assert "2.11.1" in body and "fixed stuff" in body
     assert ping_ids == ["111", "222"]
-    # Thread id persisted for next time.
     assert config.get("discord_updates_thread_id") == "updates-thread"
 
 
 def test_posts_reply_when_thread_exists(config):
     config.set("discord_updates_thread_id", "updates-thread")
-    discord = _discord({})
+    discord = _discord()
 
     sync_engine.coordinate_client_versions(config, discord)
 
@@ -98,7 +101,7 @@ def test_posts_reply_when_thread_exists(config):
 
 def test_changelog_deduped_per_version(config):
     config.set("discord_updates_thread_id", "updates-thread")
-    discord = _discord({})
+    discord = _discord()
     discord.changelog_exists = MagicMock(return_value=True)
 
     sync_engine.coordinate_client_versions(config, discord)
@@ -109,7 +112,7 @@ def test_changelog_deduped_per_version(config):
 
 def test_self_heals_deleted_updates_thread(config):
     config.set("discord_updates_thread_id", "dead-thread")
-    discord = _discord({})
+    discord = _discord()
     discord.ensure_unarchived = MagicMock(return_value=False)  # 404 → recreate
 
     sync_engine.coordinate_client_versions(config, discord)
@@ -117,20 +120,9 @@ def test_self_heals_deleted_updates_thread(config):
     discord.create_changelog_thread.assert_called_once()
 
 
-def test_changelog_works_without_weekly_thread(config):
-    config.set("discord_weekly_mapping", {})  # no registry home
-    discord = _discord({})
-
-    should_defer, errors = sync_engine.coordinate_client_versions(config, discord)
-
-    assert should_defer is False
-    discord.read_client_registry.assert_not_called()  # registry skipped
-    discord.create_changelog_thread.assert_called_once()  # changelog independent
-
-
 def test_no_changelog_when_no_release_info(config, monkeypatch):
     monkeypatch.setattr(sync_engine, "check_for_update", lambda: None)
-    discord = _discord({})
+    discord = _discord()
 
     sync_engine.coordinate_client_versions(config, discord)
 
@@ -138,12 +130,13 @@ def test_no_changelog_when_no_release_info(config, monkeypatch):
     discord.post_changelog.assert_not_called()
 
 
-def test_dev_version_skips(config, monkeypatch):
+def test_dev_version_skips_everything(config, monkeypatch):
     monkeypatch.setattr(sync_engine, "__version__", "dev")
-    discord = _discord({})
+    discord = _discord(max_remote_version="2.12.0")
 
     should_defer, errors = sync_engine.coordinate_client_versions(config, discord)
 
     assert should_defer is False and errors == []
-    discord.read_client_registry.assert_not_called()
+    discord.get_max_remote_version.assert_not_called()
+    discord.delete_registry_messages.assert_not_called()
     discord.create_changelog_thread.assert_not_called()

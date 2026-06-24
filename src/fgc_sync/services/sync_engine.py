@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fgc_sync._version import __version__
@@ -15,7 +15,6 @@ from fgc_sync.models import (
     SyncPlanEntry,
     SyncResult,
 )
-from fgc_sync.services import client_registry
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster, compute_event_hash
 from fgc_sync.services.google_calendar import GoogleCalendarClient
@@ -99,78 +98,60 @@ def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
     return False
 
 
-def _client_character_names(config: Config) -> list[str]:
-    """This client's WoW character names (best-effort, empty on any failure)."""
-    sv_path = config.saved_variables_path
-    if not sv_path or not sv_path.exists():
-        return []
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse '2.11.1' into a comparable tuple; unparseable → ``(0,)``."""
     try:
-        db = parse_saved_variables(sv_path)
-        return list(list_character_names(db))
-    except Exception:
-        return []
+        return tuple(int(x) for x in str(v).split("."))
+    except (ValueError, TypeError):
+        return (0,)
 
 
 def coordinate_client_versions(
     config: Config, discord: DiscordPoster
 ) -> tuple[bool, list[str]]:
-    """Publish this client's version, decide whether to defer to a newer one,
-    and post the release changelog to the dedicated updates thread.
+    """Decide whether to defer to a newer client and post the release changelog.
 
     Returns ``(should_defer, errors)``. ``should_defer`` True means a newer
-    client is active and this client should skip its Discord writes this cycle
-    (mirrors the stale-data guard). The defer-to-newer gate uses a client
-    registry kept in the permanent weekly thread; the changelog announcement is
-    independent of it (its own thread). Best-effort — never raises into the sync.
+    client version is active (read from the ``_v<version>`` tag embedded in
+    forum image filenames — the only cross-client version signal; no message,
+    no names) and this client should skip its Discord writes this cycle, like
+    the stale-data guard. Also deletes any leftover deprecated registry message
+    and posts the changelog. Best-effort — never raises into the sync.
     """
     errors: list[str] = []
     if not discord.is_configured or __version__ == "dev":
         return False, errors
 
-    should_defer = _register_and_check_defer(config, discord, errors)
+    # Clean up the deprecated client-registry message (posted by pre-2.11.1
+    # clients) so it stops being visible once those clients update.
+    weekly_channel = (config.get("discord_weekly_mapping", {}) or {}).get("channel_id")
+    if weekly_channel:
+        try:
+            discord.delete_registry_messages(weekly_channel)
+        except Exception as e:
+            log.debug("Registry cleanup failed: %s", e)
 
-    # The changelog announcement is independent of the registry/weekly thread.
-    # A deferring (older) client leaves it to the newer active client.
-    if not should_defer:
-        _maybe_post_changelog(config, discord, errors)
-    return should_defer, errors
-
-
-def _register_and_check_defer(
-    config: Config, discord: DiscordPoster, errors: list[str]
-) -> bool:
-    """Register this client in the shared registry and report whether a newer
-    client is active. The registry lives in the permanent weekly thread; if it
-    doesn't exist yet there's nothing to coordinate against."""
-    channel_id = (config.get("discord_weekly_mapping", {}) or {}).get("channel_id")
-    if not channel_id:
-        return False
+    # Defer-to-newer gate: compare our version against the highest version any
+    # client has embedded in a forum image filename.
+    should_defer = False
     try:
-        registry, msg_id = discord.read_client_registry(channel_id)
-        now = datetime.now(UTC)
-        names = _client_character_names(config)
-        my_key = names[0] if names else "client"
-
-        should_defer = client_registry.newer_client_active(
-            registry, __version__, now, exclude_key=my_key
-        )
-        updated = client_registry.upsert_client(
-            registry, my_key, __version__, names, now
-        )
-        discord.write_client_registry(
-            channel_id, client_registry.serialize(updated), msg_id
-        )
-        if should_defer:
+        remote = discord.get_max_remote_version()
+        if remote and _parse_version(remote) > _parse_version(__version__):
+            should_defer = True
             log.warning(
-                "Version gate: a newer client is active — deferring this client "
-                "(v%s) to avoid clobbering newer data.",
+                "Version gate: a newer client (v%s) is active — deferring this "
+                "client (v%s) to avoid clobbering newer data.",
+                remote,
                 __version__,
             )
-        return should_defer
     except Exception as e:
         errors.append(f"Version coordination failed: {e}")
         log.warning("Version coordination failed: %s", e)
-        return False
+
+    # A deferring (older) client leaves the changelog to the newer active one.
+    if not should_defer:
+        _maybe_post_changelog(config, discord, errors)
+    return should_defer, errors
 
 
 def _maybe_post_changelog(
@@ -1132,8 +1113,11 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     sv_path = config.saved_variables_path
     sv_mtime = int(sv_path.stat().st_mtime) if sv_path and sv_path.exists() else 0
 
-    cur_filename = f"weekly_{cur_week_key}_h{cur_hash}_t{sv_mtime}.png"
-    nxt_filename = f"weekly_{nxt_week_key}_h{nxt_hash}_t{sv_mtime}.png"
+    # Embed the tool version (before _h, so the hash/mtime suffix older clients
+    # parse stays intact) — the sole cross-client version signal for the gate.
+    vtag = f"_v{__version__}" if __version__ != "dev" else ""
+    cur_filename = f"weekly_{cur_week_key}{vtag}_h{cur_hash}_t{sv_mtime}.png"
+    nxt_filename = f"weekly_{nxt_week_key}{vtag}_h{nxt_hash}_t{sv_mtime}.png"
 
     try:
         cur_image = render_weekly_overview(cur_events, cur_monday)

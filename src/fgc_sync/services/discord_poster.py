@@ -13,21 +13,43 @@ from datetime import date as _date
 import requests
 
 from fgc_sync import i18n
+from fgc_sync._version import __version__
 from fgc_sync.i18n import t, tl_for
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent
-from fgc_sync.services import client_registry as _registry
 from fgc_sync.services.roster_image import render_roster
 
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://discord.com/api/v10"
 
-_FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
+# Image filenames optionally embed the writing client's tool version as a
+# ``_v<version>`` segment placed *before* ``_h`` (e.g.
+# ``roster_<id>_v2.11.1_h<hash>_t<mtime>.png``). It sits before ``_h`` so the
+# hash/mtime suffix that older clients rely on still parses unchanged — only
+# the leading free segment is affected. This is the sole cross-client version
+# signal (no names, no separate message); the defer-to-newer gate reads it.
+_FILENAME_PATTERN = re.compile(
+    r"roster_(.+?)(?:_v[\d.]+)?_h([a-f0-9]+)(?:_t(\d+))?\.png"
+)
 _WEEKLY_FILENAME_PATTERN = re.compile(r"weekly_.+\.png")
 # Same shape as above but captures the embedded content hash so we can read the
 # image a message *currently* shows (independent of any one client's mapping).
 _WEEKLY_HASH_PATTERN = re.compile(r"weekly_.+_h([a-f0-9]+)_t\d+\.png")
+# Extracts the embedded tool version from any image filename, if present.
+_FILENAME_VERSION_PATTERN = re.compile(r"_v(\d+(?:\.\d+)+)_h[a-f0-9]+")
+
+# Marks the deprecated client-registry control message so leftovers posted by
+# pre-2.11.1 clients can be located and deleted.
+_REGISTRY_MARKER = "[FGC-SYNC-REGISTRY]"
+# Tags a changelog message so the same release isn't announced twice.
+_UPDATE_NOTICE_MARKER = "[FGC-SYNC-UPDATE]"
+
+
+def _version_filename_tag() -> str:
+    """The ``_v<version>`` filename segment for this client (empty for dev)."""
+    return f"_v{__version__}" if __version__ != "dev" else ""
+
 
 # Short raid names for thread titles
 RAID_SHORT_NAMES: dict[str, str] = {
@@ -187,7 +209,10 @@ class DiscordPoster:
         name = self._thread_name(event)
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
-        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
+        filename = (
+            f"roster_{event.event_id}{_version_filename_tag()}"
+            f"_h{content_hash}_t{sv_mtime}.png"
+        )
 
         payload = {
             "name": name,
@@ -511,7 +536,10 @@ class DiscordPoster:
         """
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
-        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
+        filename = (
+            f"roster_{event.event_id}{_version_filename_tag()}"
+            f"_h{content_hash}_t{sv_mtime}.png"
+        )
 
         data = self._upload_image(
             "POST",
@@ -537,7 +565,10 @@ class DiscordPoster:
         content_hash = compute_event_hash(event)
         image_bytes = render_roster(event, timezone)
         image_msg_id = message_ids["image_id"]
-        filename = f"roster_{event.event_id}_h{content_hash}_t{sv_mtime}.png"
+        filename = (
+            f"roster_{event.event_id}{_version_filename_tag()}"
+            f"_h{content_hash}_t{sv_mtime}.png"
+        )
 
         self._upload_image(
             "PATCH",
@@ -754,11 +785,41 @@ class DiscordPoster:
                 return m.group(1)
         return None
 
-    def read_client_registry(self, channel_id: str) -> tuple[dict, str | None]:
-        """Find the client-registry control message in *channel_id*.
+    def get_max_remote_version(self) -> str | None:
+        """Highest tool version embedded in any forum image filename.
 
-        Returns ``(registry_dict, message_id)`` — ``({}, None)`` if absent or
-        unreadable. The message is located by its marker so a lost id recovers.
+        The defer-to-newer gate compares this against the local version. Scans
+        the last few messages of every forum thread for the ``_v<version>``
+        filename segment. Returns ``None`` if no versioned image is found.
+        """
+        threads = self._get_forum_threads()
+        best: tuple[int, ...] | None = None
+        best_str: str | None = None
+        for th in threads:
+            try:
+                messages = self._request(
+                    "GET",
+                    f"/channels/{th['id']}/messages",
+                    params={"limit": _MESSAGE_SCAN_LIMIT},
+                )
+            except requests.HTTPError:
+                continue
+            for msg in messages or []:
+                for att in msg.get("attachments", []):
+                    m = _FILENAME_VERSION_PATTERN.search(att.get("filename", ""))
+                    if not m:
+                        continue
+                    parts = tuple(int(x) for x in m.group(1).split("."))
+                    if best is None or parts > best:
+                        best, best_str = parts, m.group(1)
+        return best_str
+
+    def delete_registry_messages(self, channel_id: str) -> int:
+        """Delete any leftover deprecated client-registry control messages.
+
+        Pre-2.11.1 clients posted a ``[FGC-SYNC-REGISTRY]`` JSON message; this
+        removes them so the data stops being visible once such clients update.
+        Returns the number deleted.
         """
         try:
             messages = self._request(
@@ -767,38 +828,18 @@ class DiscordPoster:
                 params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
         except requests.HTTPError:
-            return {}, None
+            return 0
+        removed = 0
         for msg in messages or []:
-            content = msg.get("content") or ""
-            if _registry.REGISTRY_MARKER in content:
-                return _registry.deserialize(content), msg.get("id")
-        return {}, None
-
-    def write_client_registry(
-        self,
-        channel_id: str,
-        content: str,
-        message_id: str | None = None,
-    ) -> str | None:
-        """Upsert the registry control message; returns its id.
-
-        PATCHes *message_id* when given (reposting if it 404s), else POSTs a
-        fresh message. ``allowed_mentions`` is empty so the registry never pings.
-        """
-        payload = {"content": content, "allowed_mentions": {"parse": []}}
-        if message_id:
+            if _REGISTRY_MARKER not in (msg.get("content") or ""):
+                continue
             try:
-                self._request(
-                    "PATCH",
-                    f"/channels/{channel_id}/messages/{message_id}",
-                    json=payload,
-                )
-                return message_id
+                self._request("DELETE", f"/channels/{channel_id}/messages/{msg['id']}")
+                removed += 1
             except requests.HTTPError as e:
                 if e.response is None or e.response.status_code != 404:
-                    raise
-        data = self._request("POST", f"/channels/{channel_id}/messages", json=payload)
-        return data.get("id") if isinstance(data, dict) else None
+                    log.warning("Discord: failed to delete registry message: %s", e)
+        return removed
 
     def changelog_exists(self, channel_id: str, version: str) -> bool:
         """True if a changelog for *version* was already posted (dedup)."""
@@ -810,7 +851,7 @@ class DiscordPoster:
             )
         except requests.HTTPError:
             return False
-        token = f"{_registry.UPDATE_NOTICE_MARKER}{version}"
+        token = f"{_UPDATE_NOTICE_MARKER}{version}"
         return any(token in (m.get("content") or "") for m in messages or [])
 
     def create_changelog_thread(
@@ -870,7 +911,7 @@ class DiscordPoster:
             if not uid:
                 continue
             mentions.append(uid if uid.startswith("<@") else f"<@{uid}>")
-        marker = f"\n{_registry.UPDATE_NOTICE_MARKER}{version}"
+        marker = f"\n{_UPDATE_NOTICE_MARKER}{version}"
         ping_line = ("\n" + " ".join(mentions)) if mentions else ""
         # Reserve room for the ping line + marker within the 2000-char ceiling.
         budget = 2000 - len(marker) - len(ping_line)
