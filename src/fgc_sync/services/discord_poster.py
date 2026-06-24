@@ -315,7 +315,8 @@ class DiscordPoster:
     def _find_image_in_thread(self, thread_id: str, event_id: str) -> dict | None:
         """Scan up to 100 messages in a thread for a roster image attachment.
 
-        Returns ``{"image_id": ..., "hash": ...}`` or ``None``.
+        Returns ``{"image_id": ..., "hash": ..., "version": ...}`` (version is
+        ``None`` if the filename carries no ``_v`` tag) or ``None``.
         """
         try:
             messages = self._request(
@@ -325,12 +326,46 @@ class DiscordPoster:
             )
             for msg in messages or []:
                 for att in msg.get("attachments", []):
-                    m = _FILENAME_PATTERN.match(att.get("filename", ""))
+                    fn = att.get("filename", "")
+                    m = _FILENAME_PATTERN.match(fn)
                     if m and m.group(1) == event_id:
-                        return {"image_id": msg["id"], "hash": m.group(2)}
+                        vm = _FILENAME_VERSION_PATTERN.search(fn)
+                        return {
+                            "image_id": msg["id"],
+                            "hash": m.group(2),
+                            "version": vm.group(1) if vm else None,
+                        }
         except requests.HTTPError:
             pass
         return None
+
+    def find_event_threads(self, event: CalendarEvent) -> list[dict]:
+        """Return every forum thread that belongs to *event*, in any language.
+
+        Each entry is ``{channel_id, image_id, hash, version}``. Matches by
+        deterministic thread name (any supported language) and by roster-image
+        attachment. Used to detect and collapse cross-language / multi-client
+        duplicate threads down to a single survivor.
+        """
+        candidate_names = set(self._candidate_thread_names(event))
+        out: list[dict] = []
+        seen: set[str] = set()
+        for thread in self._get_forum_threads():
+            th_id = thread["id"]
+            if th_id in seen:
+                continue
+            found = self._find_image_in_thread(th_id, event.event_id)
+            if thread.get("name") in candidate_names or found:
+                seen.add(th_id)
+                out.append(
+                    {
+                        "channel_id": th_id,
+                        "image_id": (found or {}).get("image_id"),
+                        "hash": (found or {}).get("hash"),
+                        "version": (found or {}).get("version"),
+                    }
+                )
+        return out
 
     def find_image_message(self, channel_id: str, event_id: str) -> str | None:
         """Find the message ID of the roster image in a thread.

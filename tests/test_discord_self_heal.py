@@ -78,6 +78,7 @@ def test_recreates_thread_when_mapped_one_is_gone(config, monkeypatch):
     discord.clear_members_cache = MagicMock()
     discord.clear_thread_cache = MagicMock()
     discord.ensure_unarchived = MagicMock(return_value=False)  # thread is gone (404)
+    discord.find_event_threads = MagicMock(return_value=[])  # nothing to adopt
     discord.create_event_thread = MagicMock(
         return_value=("new-thread", {"image_id": "m1", "hash": "h1", "sv_mtime": 0})
     )
@@ -86,7 +87,7 @@ def test_recreates_thread_when_mapped_one_is_gone(config, monkeypatch):
 
     result = sync_engine.execute_discord_sync(config, discord)
 
-    # Recreated, not errored.
+    # Recreated (nothing to adopt), not errored.
     discord.create_event_thread.assert_called_once()
     assert result.errors == []
     assert result.created == 1

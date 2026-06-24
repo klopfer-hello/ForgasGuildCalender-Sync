@@ -712,41 +712,72 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
         try:
             _evt_start = _time.monotonic()
-            # Check if another client already created a thread for this event
-            if existing is None:
-                remote = discord.find_existing_thread(evt)
-                if remote:
-                    existing = {
-                        "channel_id": remote["channel_id"],
-                        "message_ids": {
-                            "image_id": remote.get("image_id"),
-                            "hash": remote.get("hash"),
-                        },
-                        "pinged": {},
-                    }
-                    log.info("Discord: adopted existing thread for %s", evt.title)
 
             channel_id = (existing or {}).get("channel_id")
             msg_ids = (existing or {}).get("message_ids")
             prev_pinged = _coerce_pinged(existing)
             is_new_thread = False
 
-            # Self-heal: a mapped thread may have been deleted externally
-            # (another client's cleanup, manual deletion). Treat a gone thread
-            # like a brand-new event and recreate it, instead of erroring every
-            # sync forever — clients never have to hand-clear the mapping.
-            thread_gone = channel_id is not None and not discord.ensure_unarchived(
-                channel_id
-            )
-            if thread_gone:
+            # Self-heal: verify a mapped thread still exists. A 404 means it was
+            # deleted externally (another client's cleanup, manual delete) — forget
+            # it so the adopt-before-create path below recovers, instead of
+            # erroring forever. Clients never have to hand-clear the mapping.
+            if channel_id is not None and not discord.ensure_unarchived(channel_id):
                 log.warning(
-                    "Discord: mapped thread %s for %s no longer exists — recreating",
+                    "Discord: mapped thread %s for %s no longer exists — "
+                    "re-adopting or recreating",
                     channel_id,
                     evt.title,
                 )
+                channel_id = msg_ids = None
+                prev_pinged = {}
 
-            if channel_id is None or thread_gone:
-                # New (or recreated) event — create forum thread with roster image
+            # Adopt-before-create — covers both no-mapping and the self-heal case
+            # above. Collect every thread matching this event in *any* language
+            # and keep a single deterministic survivor, deleting the rest. This
+            # both prevents and cleans up cross-language / multi-client duplicate
+            # threads. The survivor is the thread whose roster image carries the
+            # highest tool version (so the up-to-date copy wins, not an old
+            # client's), tie-broken by lowest id — a client-independent choice so
+            # every client converges on the same thread.
+            if channel_id is None:
+                matches = discord.find_event_threads(evt)
+                if matches:
+                    survivor = max(
+                        matches,
+                        key=lambda t: (
+                            _parse_version(t.get("version") or "0"),
+                            -int(t["channel_id"]),
+                        ),
+                    )
+                    for dup in matches:
+                        if dup["channel_id"] == survivor["channel_id"]:
+                            continue
+                        try:
+                            discord.delete_thread(dup["channel_id"])
+                            result.deleted += 1
+                            log.info(
+                                "Discord: removed duplicate thread %s for %s",
+                                dup["channel_id"],
+                                evt.title,
+                            )
+                        except Exception as e:
+                            log.warning(
+                                "Discord: failed to delete duplicate %s: %s",
+                                dup["channel_id"],
+                                e,
+                            )
+                    discord.ensure_unarchived(survivor["channel_id"])
+                    channel_id = survivor["channel_id"]
+                    msg_ids = {
+                        "image_id": survivor.get("image_id"),
+                        "hash": survivor.get("hash"),
+                    }
+                    prev_pinged = {}
+                    log.info("Discord: adopted existing thread for %s", evt.title)
+
+            if channel_id is None:
+                # New event — create forum thread with roster image
                 channel_id, msg_ids = discord.create_event_thread(
                     evt,
                     timezone,
@@ -756,7 +787,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 is_new_thread = True
                 result.created += 1
             else:
-                # Existing thread (already unarchived by the check above)
+                # Existing thread (already unarchived above)
                 if msg_ids and msg_ids.get("hash") == content_hash:
                     # Image up to date — fall through to ping retry below
                     pass
