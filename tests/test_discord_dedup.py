@@ -97,6 +97,49 @@ def test_keeps_highest_version_thread_and_deletes_the_rest(config, monkeypatch):
     assert config.get("discord_message_mapping")[evt.event_id]["channel_id"] == "100"
 
 
+def test_dead_mapping_routes_through_dedup_and_collapses(config, monkeypatch):
+    """The real incident: a stale mapping pointing at a deleted thread must
+    self-heal *through* the dedup path and collapse the surviving duplicates —
+    not blindly recreate (which is what produced the duplicates)."""
+    evt = _future_event()
+    _patch_collect(monkeypatch, {evt.event_id: evt})
+    config.set(
+        "discord_message_mapping",
+        {
+            evt.event_id: {
+                "channel_id": "dead",
+                "message_ids": {"hash": "old"},
+                "pinged": {},
+            }
+        },
+    )
+
+    discord = MagicMock()
+    discord.is_configured = True
+    discord.clear_members_cache = MagicMock()
+    discord.clear_thread_cache = MagicMock()
+    # "dead" 404s (forget it); survivor unarchive returns True.
+    discord.ensure_unarchived = MagicMock(side_effect=lambda cid: cid != "dead")
+    discord.find_event_threads = MagicMock(
+        return_value=[
+            {"channel_id": "999", "image_id": "old", "hash": "h", "version": None},
+            {"channel_id": "100", "image_id": "new", "hash": "h", "version": "2.11.2"},
+        ]
+    )
+    discord.get_already_pinged_names = MagicMock(return_value={})
+    discord.ping_members = MagicMock(return_value={})
+    discord.delete_thread = MagicMock()
+    discord.message_exists = MagicMock(return_value=True)
+    discord.update_event = MagicMock(return_value={"image_id": "new", "hash": "x"})
+    discord.find_image_message = MagicMock(return_value="new")
+
+    sync_engine.execute_discord_sync(config, discord)
+
+    discord.create_event_thread.assert_not_called()  # adopted, not recreated
+    discord.delete_thread.assert_called_once_with("999")  # no-version dup removed
+    assert config.get("discord_message_mapping")[evt.event_id]["channel_id"] == "100"
+
+
 def test_single_thread_is_just_adopted(config, monkeypatch):
     evt = _future_event()
     _patch_collect(monkeypatch, {evt.event_id: evt})
