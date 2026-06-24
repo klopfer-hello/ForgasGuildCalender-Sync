@@ -105,33 +105,6 @@ def newer_client_active(
     return False
 
 
-def outdated_client_names(
-    registry: dict,
-    latest_version: str,
-    now: datetime,
-    *,
-    freshness_hours: int = FRESHNESS_HOURS,
-) -> list[str]:
-    """Character names of fresh clients running below *latest_version*.
-
-    Deduplicated, order-stable. Used to ping the operators who still need to
-    update.
-    """
-    latest = parse_version(latest_version)
-    names: list[str] = []
-    seen: set[str] = set()
-    for entry in active_clients(
-        registry, now, freshness_hours=freshness_hours
-    ).values():
-        if parse_version(entry.get("version", "0")) >= latest:
-            continue
-        for name in entry.get("names", []) or []:
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-    return names
-
-
 def serialize(registry: dict) -> str:
     """Render the registry as the control message body (marker + JSON block)."""
     body = json.dumps(registry, ensure_ascii=False, sort_keys=True)

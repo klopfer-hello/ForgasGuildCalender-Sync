@@ -243,8 +243,11 @@
     "weekday_abbrev": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     "thread_with_word": "with",
     "ping_confirmed": "Confirmed",
-    "ping_newly_confirmed": "Newly confirmed",
-    "update_notice": "📢 A new FGC-Sync version (v{version}) is available — please update your client so everyone stays in sync."
+    "ping_newly_confirmed": "Newly confirmed"
+  },
+  "updates": {
+    "thread_name": "📋 FGC-Sync Changelog",
+    "changelog_header": "**FGC-Sync v{version}**"
   },
   "weekly": {
     "thread_name": "Weekly Raid Overview",

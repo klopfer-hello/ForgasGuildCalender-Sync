@@ -800,8 +800,8 @@ class DiscordPoster:
         data = self._request("POST", f"/channels/{channel_id}/messages", json=payload)
         return data.get("id") if isinstance(data, dict) else None
 
-    def version_notice_exists(self, channel_id: str, version: str) -> bool:
-        """True if a notice for *version* was already posted (dedup)."""
+    def changelog_exists(self, channel_id: str, version: str) -> bool:
+        """True if a changelog for *version* was already posted (dedup)."""
         try:
             messages = self._request(
                 "GET",
@@ -813,40 +813,73 @@ class DiscordPoster:
         token = f"{_registry.UPDATE_NOTICE_MARKER}{version}"
         return any(token in (m.get("content") or "") for m in messages or [])
 
-    def post_version_notice(
+    def create_changelog_thread(
         self,
-        channel_id: str,
-        text: str,
-        names: list[str],
+        name: str,
+        body: str,
+        ping_user_ids: list[str],
         version: str,
     ) -> str | None:
-        """Post a new-version notice, pinging the operators behind *names*.
+        """Create the dedicated updates forum thread with *body* as its starter.
 
-        Resolves each character name to a Discord member (same matching as
-        roster pings) and mentions the resolved users. Appends a dedup marker.
+        Returns the new thread id. Pings the configured user ids and stamps the
+        dedup marker, like :meth:`post_changelog`.
         """
-        mentions: list[str] = []
-        for name in names:
-            user_id = self._find_member_id(name)
-            if user_id:
-                mention = f"<@{user_id}>"
-                if mention not in mentions:
-                    mentions.append(mention)
-        content = text
-        if mentions:
-            content += "\n" + " ".join(mentions)
-        content += f"\n{_registry.UPDATE_NOTICE_MARKER}{version}"
+        payload = {
+            "name": name,
+            "message": self._changelog_message(body, ping_user_ids, version),
+        }
+        data = self._request(
+            "POST", f"/channels/{self._forum_id}/threads", json=payload
+        )
+        thread_id = data.get("id") if isinstance(data, dict) else None
+        log.info("Discord: created updates thread %s for changelog %s", name, version)
+        return thread_id
+
+    def post_changelog(
+        self,
+        channel_id: str,
+        body: str,
+        ping_user_ids: list[str],
+        version: str,
+    ) -> str | None:
+        """Post a changelog entry as a reply in the existing updates thread."""
         data = self._request(
             "POST",
             f"/channels/{channel_id}/messages",
-            json={"content": content, "allowed_mentions": {"parse": ["users"]}},
+            json=self._changelog_message(body, ping_user_ids, version),
         )
         log.info(
-            "Discord: posted version notice for %s, pinged %d operator(s)",
+            "Discord: posted changelog for %s, pinged %d user(s)",
             version,
-            len(mentions),
+            len(ping_user_ids),
         )
         return data.get("id") if isinstance(data, dict) else None
+
+    @staticmethod
+    def _changelog_message(body: str, ping_user_ids: list[str], version: str) -> dict:
+        """Build the message payload for a changelog post.
+
+        Appends the configured pings and the per-version dedup marker, caps the
+        content to Discord's 2000-char limit, and allows user mentions so the
+        pings actually notify.
+        """
+        mentions = []
+        for raw in ping_user_ids:
+            uid = str(raw).strip()
+            if not uid:
+                continue
+            mentions.append(uid if uid.startswith("<@") else f"<@{uid}>")
+        marker = f"\n{_registry.UPDATE_NOTICE_MARKER}{version}"
+        ping_line = ("\n" + " ".join(mentions)) if mentions else ""
+        # Reserve room for the ping line + marker within the 2000-char ceiling.
+        budget = 2000 - len(marker) - len(ping_line)
+        if len(body) > budget:
+            body = body[: max(0, budget - 1)].rstrip() + "…"
+        return {
+            "content": f"{body}{ping_line}{marker}",
+            "allowed_mentions": {"parse": ["users"]},
+        }
 
     # -- Member lookup & pinging --
 

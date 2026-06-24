@@ -58,23 +58,6 @@ class TestDeferDecision:
         assert cr.newer_client_active(reg, "2.10.0", NOW) is False
 
 
-class TestOutdatedNames:
-    def test_collects_names_below_target(self):
-        reg = {
-            "clients": {
-                "a": _entry("2.9.1", ["Alice"]),
-                "b": _entry("2.10.0", ["Bob"]),
-                "c": _entry("2.8.0", ["Cara", "Alice"]),
-            }
-        }
-        names = cr.outdated_client_names(reg, "2.10.0", NOW)
-        assert names == ["Alice", "Cara"]  # dedup, order-stable; Bob is current
-
-    def test_stale_clients_excluded(self):
-        reg = {"clients": {"a": _entry("2.9.1", ["Alice"], age_hours=72)}}
-        assert cr.outdated_client_names(reg, "2.10.0", NOW) == []
-
-
 class TestSerialization:
     def test_roundtrip(self):
         reg = cr.upsert_client({}, "Klopf", "2.10.0", ["Klopf"], NOW)

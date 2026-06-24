@@ -114,107 +114,120 @@ def _client_character_names(config: Config) -> list[str]:
 def coordinate_client_versions(
     config: Config, discord: DiscordPoster
 ) -> tuple[bool, list[str]]:
-    """Publish this client's version and decide whether to defer to a newer one.
+    """Publish this client's version, decide whether to defer to a newer one,
+    and post the release changelog to the dedicated updates thread.
 
-    Maintains a shared client registry in the permanent weekly thread so
-    clients can see each other's versions. Returns ``(should_defer, errors)``:
-    ``should_defer`` True means a newer client is active and this client should
-    skip its Discord writes this cycle (mirrors the stale-data guard). Also
-    posts a deduped new-version notice pinging the operators of outdated
-    clients. Best-effort — never raises into the sync.
+    Returns ``(should_defer, errors)``. ``should_defer`` True means a newer
+    client is active and this client should skip its Discord writes this cycle
+    (mirrors the stale-data guard). The defer-to-newer gate uses a client
+    registry kept in the permanent weekly thread; the changelog announcement is
+    independent of it (its own thread). Best-effort — never raises into the sync.
     """
     errors: list[str] = []
     if not discord.is_configured or __version__ == "dev":
         return False, errors
 
-    # The registry lives in the permanent weekly thread; if it doesn't exist
-    # yet there's nothing to coordinate against (the first weekly sync creates
-    # it, and the next cycle picks coordination up).
+    should_defer = _register_and_check_defer(config, discord, errors)
+
+    # The changelog announcement is independent of the registry/weekly thread.
+    # A deferring (older) client leaves it to the newer active client.
+    if not should_defer:
+        _maybe_post_changelog(config, discord, errors)
+    return should_defer, errors
+
+
+def _register_and_check_defer(
+    config: Config, discord: DiscordPoster, errors: list[str]
+) -> bool:
+    """Register this client in the shared registry and report whether a newer
+    client is active. The registry lives in the permanent weekly thread; if it
+    doesn't exist yet there's nothing to coordinate against."""
     channel_id = (config.get("discord_weekly_mapping", {}) or {}).get("channel_id")
     if not channel_id:
-        return False, errors
-
+        return False
     try:
         registry, msg_id = discord.read_client_registry(channel_id)
         now = datetime.now(UTC)
         names = _client_character_names(config)
         my_key = names[0] if names else "client"
 
-        # Decide deferral from the *other* clients before stamping ourselves.
         should_defer = client_registry.newer_client_active(
             registry, __version__, now, exclude_key=my_key
         )
-
-        # Register/refresh our own entry so other clients can see and ping us
-        # (we register even when deferring, so we remain pingable as outdated).
         updated = client_registry.upsert_client(
             registry, my_key, __version__, names, now
         )
-        try:
-            discord.write_client_registry(
-                channel_id, client_registry.serialize(updated), msg_id
-            )
-        except Exception as e:
-            errors.append(f"Client registry update failed: {e}")
-            log.warning("Client registry update failed: %s", e)
-
+        discord.write_client_registry(
+            channel_id, client_registry.serialize(updated), msg_id
+        )
         if should_defer:
             log.warning(
                 "Version gate: a newer client is active — deferring this client "
                 "(v%s) to avoid clobbering newer data.",
                 __version__,
             )
-            return True, errors
-
-        _maybe_post_version_notice(discord, channel_id, updated, now, errors)
-        return False, errors
+        return should_defer
     except Exception as e:
         errors.append(f"Version coordination failed: {e}")
         log.warning("Version coordination failed: %s", e)
-        return False, errors
+        return False
 
 
-def _maybe_post_version_notice(
-    discord: DiscordPoster,
-    channel_id: str,
-    registry: dict,
-    now: datetime,
-    errors: list[str],
+def _maybe_post_changelog(
+    config: Config, discord: DiscordPoster, errors: list[str]
 ) -> None:
-    """Announce a new version (once) and ping operators of outdated clients.
+    """Post the latest release's changelog to the dedicated updates thread, once
+    per version, pinging the Discord users listed in config.
 
-    Only the newest active client announces, so there is a single poster. The
-    target version is the newest known — the latest GitHub release if it is
-    newer than us, otherwise our own version (to nudge clients behind us).
+    The thread is created on first use and recovered by name (across languages)
+    or via self-heal if its stored id 404s. The changelog body is the GitHub
+    release notes; only the header is translated.
     """
-    active = client_registry.active_clients(registry, now)
-    versions = [
-        client_registry.parse_version(e.get("version", "0")) for e in active.values()
-    ]
-    my_v = client_registry.parse_version(__version__)
-    if versions and my_v < max(versions):
-        return  # not the newest running client — let it announce
-
-    target = __version__
     try:
         info = check_for_update()
-        if info and client_registry.parse_version(info.latest_version) > my_v:
-            target = info.latest_version
     except Exception as e:
-        log.debug("Version notice: update check failed: %s", e)
-
-    outdated = client_registry.outdated_client_names(registry, target, now)
-    if not outdated or discord.version_notice_exists(channel_id, target):
+        log.debug("Changelog: update check failed: %s", e)
         return
+    if not info or not info.latest_version:
+        return
+    version = info.latest_version
 
     from fgc_sync.i18n import t as _t
+    from fgc_sync.i18n import t_all
 
-    text = _t("discord.update_notice", version=target)
+    name = _t("updates.thread_name")
+    header = _t("updates.changelog_header", version=version)
+    changelog = (info.release_notes or "").strip()
+    body = f"{header}\n\n{changelog}" if changelog else header
+    ping_ids = config.get("discord_update_ping_user_ids", []) or []
+
     try:
-        discord.post_version_notice(channel_id, text, outdated, target)
+        thread_id = config.get("discord_updates_thread_id")
+        # Self-heal: drop a deleted thread so it's recreated below.
+        if thread_id and not discord.ensure_unarchived(thread_id):
+            thread_id = None
+        # Adopt an existing thread by name (any supported language).
+        if not thread_id:
+            discord.clear_thread_cache()
+            for candidate in t_all("updates.thread_name"):
+                found = discord.find_thread_by_name(candidate)
+                if found:
+                    thread_id = found
+                    break
+
+        if thread_id and discord.changelog_exists(thread_id, version):
+            config.set("discord_updates_thread_id", thread_id)
+            return  # already announced
+
+        if thread_id:
+            discord.post_changelog(thread_id, body, ping_ids, version)
+        else:
+            thread_id = discord.create_changelog_thread(name, body, ping_ids, version)
+        if thread_id:
+            config.set("discord_updates_thread_id", thread_id)
     except Exception as e:
-        errors.append(f"Version notice failed: {e}")
-        log.warning("Version notice failed: %s", e)
+        errors.append(f"Changelog post failed: {e}")
+        log.warning("Changelog post failed: %s", e)
 
 
 def _would_blank_remote_week(

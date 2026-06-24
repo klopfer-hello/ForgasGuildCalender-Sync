@@ -215,11 +215,10 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 
 ### Cross-Client Version Coordination (`coordinate_client_versions`, `services/client_registry.py`)
 
-Called by the controller and CLI **before** the Discord/weekly syncs; if it returns `should_defer`, both are skipped that cycle. Backward-compatible — pre-2.10.0 clients never read or write the control message.
+Called by the controller and CLI **before** the Discord/weekly syncs; if it returns `should_defer`, both are skipped that cycle. Two **independent** mechanisms — the registry/gate and the changelog — share this entry point. `dev` version skips it entirely; every step is best-effort and never raises into the sync. Backward-compatible — pre-2.10.0 clients never read or write the control messages.
 
-- **Client registry**: a single bot message in the permanent weekly thread, located by the `[FGC-SYNC-REGISTRY]` marker (id not relied upon — re-scanned each cycle, recovered if lost). Content is a JSON block `{"clients": {"<key>": {"version", "names", "last_seen"}}}`. `<key>` is the client's first WoW character name; `names` are all its characters (auto-detected). Each cycle a client upserts its own entry — **even when deferring**, so it stays visible and pingable as outdated
-- **Defer-to-newer gate**: `newer_client_active` — if any *fresh* entry (seen within `FRESHNESS_HOURS=24`, excluding self) has a higher version, this client defers. Mirrors the stale-data guard but on version rather than mtime. Note: only protects clients that run ≥2.10.0 code; already-deployed older clients can't be retroactively gated
-- **New-version notice with operator pings**: only the **newest active** client announces (single poster). Target = newest known version (latest GitHub release if newer than us, else our own). `outdated_client_names` collects the characters of fresh clients below the target; `post_version_notice` resolves them to Discord members (same matching as roster pings) and pings them with `discord.update_notice`. Deduped per target version via the `[FGC-SYNC-UPDATE]<version>` marker (`version_notice_exists`). `dev` version skips coordination entirely; all steps are best-effort and never raise into the sync
+- **Client registry + defer-to-newer gate** (`_register_and_check_defer`): a single bot message in the permanent weekly thread, located by the `[FGC-SYNC-REGISTRY]` marker (id not relied upon — re-scanned each cycle, recovered if lost). Content is a JSON block `{"clients": {"<key>": {"version", "names", "last_seen"}}}`. `<key>` is the client's first WoW character name. Each cycle a client upserts its own entry, then `newer_client_active` checks whether any *fresh* entry (seen within `FRESHNESS_HOURS=24`, excluding self) has a higher version — if so this client defers. Mirrors the stale-data guard but on version rather than mtime. No weekly thread yet → no gate (degrades to no-op). Only protects clients running ≥2.10.0; already-deployed older clients can't be retroactively gated
+- **Release changelog** (`_maybe_post_changelog`): posts the latest GitHub release's notes to a **dedicated** updates forum thread (`updates.thread_name`, e.g. `📋 FGC-Sync Changelog`) — separate from the member-facing weekly thread, which it never touches. Independent of the registry/gate: it runs even with no weekly thread, but a *deferring* (older) client leaves it to the newer one. The thread is created on first use (`create_changelog_thread`), recovered by name across languages, or self-healed if its stored `discord_updates_thread_id` 404s (`ensure_unarchived` → `False`). Body = translated `updates.changelog_header` + the raw release notes (notes are **not** translated), capped to Discord's 2000-char limit. Pings the Discord user ids in **`discord_update_ping_user_ids`** (config-provided, *not* derived from clients/characters). Deduped per version via the `[FGC-SYNC-UPDATE]<version>` marker (`changelog_exists`)
 
 ### Mapping Schema (`discord_message_mapping[event_id]`)
 
@@ -357,6 +356,8 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 | `discord_forum_id` | Forum channel ID (optional) |
 | `discord_message_mapping` | `{fgc_eventId: {channel_id, message_ids, pinged[]}}` |
 | `discord_weekly_mapping` | `{channel_id, message_id, hash, week_key, sv_mtime}` — single entry for the permanent weekly-overview thread |
+| `discord_updates_thread_id` | Thread ID of the dedicated changelog/updates thread (auto-created; recovered by name or self-healed on 404) |
+| `discord_update_ping_user_ids` | `list[str]` of Discord user IDs to ping on each release changelog (optional; raw IDs or `<@id>` mentions) |
 
 ### Config Transactions
 

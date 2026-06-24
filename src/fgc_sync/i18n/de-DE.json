@@ -243,8 +243,11 @@
     "weekday_abbrev": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
     "thread_with_word": "mit",
     "ping_confirmed": "Bestätigt",
-    "ping_newly_confirmed": "Neu bestätigt",
-    "update_notice": "📢 Eine neue FGC-Sync Version (v{version}) ist verfügbar — bitte aktualisiere deinen Client, damit alle synchron bleiben."
+    "ping_newly_confirmed": "Neu bestätigt"
+  },
+  "updates": {
+    "thread_name": "📋 FGC-Sync Changelog",
+    "changelog_header": "**FGC-Sync v{version}**"
   },
   "weekly": {
     "thread_name": "Wöchentliche Raid Übersicht",
