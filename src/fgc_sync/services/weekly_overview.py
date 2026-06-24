@@ -163,6 +163,12 @@ def compute_weekly_hash(events: list[CalendarEvent]) -> str:
     return hashlib.sha256(payload).hexdigest()[:8]
 
 
+#: Hash produced by :func:`compute_weekly_hash` for an empty event list. A
+#: rendered week carrying this hash is blank — used to refuse overwriting a
+#: populated remote overview with an empty local render (see sync_engine).
+EMPTY_WEEK_HASH = compute_weekly_hash([])
+
+
 def _determine_hour_range(events: list[CalendarEvent]) -> tuple[int, int]:
     if not events:
         return _DEFAULT_START_HOUR, _DEFAULT_END_HOUR

@@ -29,6 +29,7 @@ from fgc_sync.services.sync_engine import (
     compute_discord_sync_plan,
     compute_sync_plan,
     compute_weekly_sync_plan,
+    coordinate_client_versions,
     execute_discord_sync,
     execute_sync,
     execute_weekly_sync,
@@ -492,17 +493,23 @@ def main():
                         t("cli.sync.force_resync_delete_failed", id=ch_id, error=e)
                     )
             config.set("discord_message_mapping", {})
-        if not args.weekly_only:
-            result = execute_discord_sync(config, discord)
-            log.info("%s: %s", t("cli.sync.discord_label"), result)
-            if result.errors:
-                for err in result.errors:
+        should_defer, coord_errors = coordinate_client_versions(config, discord)
+        for err in coord_errors:
+            log.error("  %s", err)
+        if should_defer:
+            log.warning(t("cli.sync.version_deferred"))
+        else:
+            if not args.weekly_only:
+                result = execute_discord_sync(config, discord)
+                log.info("%s: %s", t("cli.sync.discord_label"), result)
+                if result.errors:
+                    for err in result.errors:
+                        log.error("  %s", err)
+            weekly_result = execute_weekly_sync(config, discord)
+            log.info("%s: %s", t("cli.sync.weekly_label"), weekly_result)
+            if weekly_result.errors:
+                for err in weekly_result.errors:
                     log.error("  %s", err)
-        weekly_result = execute_weekly_sync(config, discord)
-        log.info("%s: %s", t("cli.sync.weekly_label"), weekly_result)
-        if weekly_result.errors:
-            for err in weekly_result.errors:
-                log.error("  %s", err)
     elif args.discord_only or args.weekly_only:
         log.error(t("cli.sync.discord_not_configured"))
         sys.exit(1)

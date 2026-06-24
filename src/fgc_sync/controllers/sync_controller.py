@@ -13,6 +13,7 @@ from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.sync_engine import (
     compute_sync_plan,
+    coordinate_client_versions,
     execute_discord_sync,
     execute_sync,
     execute_weekly_sync,
@@ -53,6 +54,14 @@ class _SyncThread(QThread):
                 log.error("Google sync failed: %s", e)
 
         if self._discord and self._discord.is_configured:
+            should_defer, coord_errors = coordinate_client_versions(
+                self._config, self._discord
+            )
+            result.errors.extend(coord_errors)
+            if should_defer:
+                self.sync_done.emit(result)
+                return
+
             try:
                 discord_result = execute_discord_sync(self._config, self._discord)
                 result.created += discord_result.created

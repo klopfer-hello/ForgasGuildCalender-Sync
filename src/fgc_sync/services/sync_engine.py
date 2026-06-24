@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from fgc_sync._version import __version__
 from fgc_sync.models import (
     Attendance,
     CalendarEvent,
@@ -14,6 +15,7 @@ from fgc_sync.models import (
     SyncPlanEntry,
     SyncResult,
 )
+from fgc_sync.services import client_registry
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster, compute_event_hash
 from fgc_sync.services.google_calendar import GoogleCalendarClient
@@ -23,7 +25,9 @@ from fgc_sync.services.lua_parser import (
     list_character_names,
     parse_saved_variables,
 )
+from fgc_sync.services.updater import check_for_update
 from fgc_sync.services.weekly_overview import (
+    EMPTY_WEEK_HASH,
     candidate_weekly_thread_names,
     collect_week_events,
     compute_weekly_hash,
@@ -39,6 +43,16 @@ log = logging.getLogger(__name__)
 EXPIRED_EVENT_HOURS = 24  # delete Discord threads this long after event start
 DISCORD_LOOKAHEAD_DAYS = 7  # only post events within this window
 _SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
+
+# Bulk-deletion guard for per-event Discord cleanup. The all-empty guard
+# (no_events_guard) only catches a *fully* empty parse; a divergent or partial
+# read — e.g. another client resolving a different namespace, or one whose
+# SavedVariables lacks this guild's events — yields a non-empty-but-wrong event
+# set that can mark many still-valid events as "removed" at once. Thread
+# deletion is permanent, so refuse to bulk-delete an implausibly large share of
+# the mapping in a single sync. Small removals (normal churn) always proceed.
+_BULK_DELETION_GUARD_MIN = 3  # don't guard removals smaller than this
+_BULK_DELETION_GUARD_FRACTION = 0.5  # suspicious above this share of the mapping
 
 
 def _coerce_pinged(existing: dict | None) -> dict[str, str]:
@@ -83,6 +97,144 @@ def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
         )
         return True
     return False
+
+
+def _client_character_names(config: Config) -> list[str]:
+    """This client's WoW character names (best-effort, empty on any failure)."""
+    sv_path = config.saved_variables_path
+    if not sv_path or not sv_path.exists():
+        return []
+    try:
+        db = parse_saved_variables(sv_path)
+        return list(list_character_names(db))
+    except Exception:
+        return []
+
+
+def coordinate_client_versions(
+    config: Config, discord: DiscordPoster
+) -> tuple[bool, list[str]]:
+    """Publish this client's version and decide whether to defer to a newer one.
+
+    Maintains a shared client registry in the permanent weekly thread so
+    clients can see each other's versions. Returns ``(should_defer, errors)``:
+    ``should_defer`` True means a newer client is active and this client should
+    skip its Discord writes this cycle (mirrors the stale-data guard). Also
+    posts a deduped new-version notice pinging the operators of outdated
+    clients. Best-effort — never raises into the sync.
+    """
+    errors: list[str] = []
+    if not discord.is_configured or __version__ == "dev":
+        return False, errors
+
+    # The registry lives in the permanent weekly thread; if it doesn't exist
+    # yet there's nothing to coordinate against (the first weekly sync creates
+    # it, and the next cycle picks coordination up).
+    channel_id = (config.get("discord_weekly_mapping", {}) or {}).get("channel_id")
+    if not channel_id:
+        return False, errors
+
+    try:
+        registry, msg_id = discord.read_client_registry(channel_id)
+        now = datetime.now(UTC)
+        names = _client_character_names(config)
+        my_key = names[0] if names else "client"
+
+        # Decide deferral from the *other* clients before stamping ourselves.
+        should_defer = client_registry.newer_client_active(
+            registry, __version__, now, exclude_key=my_key
+        )
+
+        # Register/refresh our own entry so other clients can see and ping us
+        # (we register even when deferring, so we remain pingable as outdated).
+        updated = client_registry.upsert_client(
+            registry, my_key, __version__, names, now
+        )
+        try:
+            discord.write_client_registry(
+                channel_id, client_registry.serialize(updated), msg_id
+            )
+        except Exception as e:
+            errors.append(f"Client registry update failed: {e}")
+            log.warning("Client registry update failed: %s", e)
+
+        if should_defer:
+            log.warning(
+                "Version gate: a newer client is active — deferring this client "
+                "(v%s) to avoid clobbering newer data.",
+                __version__,
+            )
+            return True, errors
+
+        _maybe_post_version_notice(discord, channel_id, updated, now, errors)
+        return False, errors
+    except Exception as e:
+        errors.append(f"Version coordination failed: {e}")
+        log.warning("Version coordination failed: %s", e)
+        return False, errors
+
+
+def _maybe_post_version_notice(
+    discord: DiscordPoster,
+    channel_id: str,
+    registry: dict,
+    now: datetime,
+    errors: list[str],
+) -> None:
+    """Announce a new version (once) and ping operators of outdated clients.
+
+    Only the newest active client announces, so there is a single poster. The
+    target version is the newest known — the latest GitHub release if it is
+    newer than us, otherwise our own version (to nudge clients behind us).
+    """
+    active = client_registry.active_clients(registry, now)
+    versions = [
+        client_registry.parse_version(e.get("version", "0")) for e in active.values()
+    ]
+    my_v = client_registry.parse_version(__version__)
+    if versions and my_v < max(versions):
+        return  # not the newest running client — let it announce
+
+    target = __version__
+    try:
+        info = check_for_update()
+        if info and client_registry.parse_version(info.latest_version) > my_v:
+            target = info.latest_version
+    except Exception as e:
+        log.debug("Version notice: update check failed: %s", e)
+
+    outdated = client_registry.outdated_client_names(registry, target, now)
+    if not outdated or discord.version_notice_exists(channel_id, target):
+        return
+
+    from fgc_sync.i18n import t as _t
+
+    text = _t("discord.update_notice", version=target)
+    try:
+        discord.post_version_notice(channel_id, text, outdated, target)
+    except Exception as e:
+        errors.append(f"Version notice failed: {e}")
+        log.warning("Version notice failed: %s", e)
+
+
+def _would_blank_remote_week(
+    discord: DiscordPoster,
+    channel_id: str | None,
+    message_id: str | None,
+    local_hash: str,
+) -> bool:
+    """Return True if pushing *local_hash* would blank a populated message.
+
+    Guards against a stale/incomplete local read (a week with zero events)
+    overwriting an overview image another client already populated. Only the
+    empty-render case ever triggers a remote read, so the common path is free.
+    Fails open (returns False) if the remote hash can't be determined — better
+    to attempt the write than to wedge a legitimately-changing overview.
+    """
+    if local_hash != EMPTY_WEEK_HASH or not channel_id or not message_id:
+        return False
+    remote_hash = discord.get_weekly_image_hash(channel_id, message_id)
+    return bool(remote_hash) and remote_hash != EMPTY_WEEK_HASH
 
 
 def compute_sync_plan(
@@ -446,19 +598,36 @@ def compute_discord_sync_plan(
                     )
                 )
 
-    # Events in mapping but no longer in WoW or deleted
+    # Events in mapping but no longer in WoW or deleted. Mirror the execute
+    # path's bulk-deletion guard so the dry-run doesn't show removals that the
+    # real sync would refuse (divergent/partial parse).
+    removal_candidates = [
+        event_id
+        for event_id in mapping
+        if event_id not in all_events or event_id in deleted_ids
+    ]
+    bulk_guarded = len(removal_candidates) >= _BULK_DELETION_GUARD_MIN and len(
+        removal_candidates
+    ) > _BULK_DELETION_GUARD_FRACTION * len(mapping)
+    if bulk_guarded:
+        plan.errors.append(
+            f"Bulk-deletion guard would skip removing {len(removal_candidates)} "
+            f"of {len(mapping)} threads (likely divergent/partial data)."
+        )
+
     for event_id, _info_map in mapping.items():
         if event_id not in all_events or event_id in deleted_ids:
-            plan.entries.append(
-                SyncPlanEntry(
-                    SyncAction.DELETE,
-                    event_id,
-                    event_id,
-                    "",
-                    "",
-                    "",
+            if not bulk_guarded:
+                plan.entries.append(
+                    SyncPlanEntry(
+                        SyncAction.DELETE,
+                        event_id,
+                        event_id,
+                        "",
+                        "",
+                        "",
+                    )
                 )
-            )
             continue
         # Expired (24+ hours ago)
         evt = all_events.get(event_id)
@@ -568,8 +737,22 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             prev_pinged = _coerce_pinged(existing)
             is_new_thread = False
 
-            if channel_id is None:
-                # New event — create forum thread with roster image
+            # Self-heal: a mapped thread may have been deleted externally
+            # (another client's cleanup, manual deletion). Treat a gone thread
+            # like a brand-new event and recreate it, instead of erroring every
+            # sync forever — clients never have to hand-clear the mapping.
+            thread_gone = channel_id is not None and not discord.ensure_unarchived(
+                channel_id
+            )
+            if thread_gone:
+                log.warning(
+                    "Discord: mapped thread %s for %s no longer exists — recreating",
+                    channel_id,
+                    evt.title,
+                )
+
+            if channel_id is None or thread_gone:
+                # New (or recreated) event — create forum thread with roster image
                 channel_id, msg_ids = discord.create_event_thread(
                     evt,
                     timezone,
@@ -579,8 +762,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 is_new_thread = True
                 result.created += 1
             else:
-                # Existing thread — ensure it's unarchived before posting
-                discord.ensure_unarchived(channel_id)
+                # Existing thread (already unarchived by the check above)
                 if msg_ids and msg_ids.get("hash") == content_hash:
                     # Image up to date — fall through to ping retry below
                     pass
@@ -688,27 +870,53 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     # When the no-events guard is active, skip this phase — we can't tell
     # "genuinely removed" from "parser couldn't see them" — and only let the
     # 24h-expired cleanup below run (which is a no-op when all_events is empty).
+    removal_candidates = (
+        []
+        if no_events_guard
+        else [
+            event_id
+            for event_id in mapping
+            if event_id not in all_events or event_id in deleted_ids
+        ]
+    )
+
+    # Bulk-deletion guard: a divergent/partial parse can make many still-valid
+    # events look "removed" at once (the all-empty guard above only catches a
+    # fully-empty parse). Deleting a thread is permanent, so when a single sync
+    # would remove an implausibly large share of the mapping, skip these
+    # removals entirely and let only the 24h-expired cleanup run.
+    if len(removal_candidates) >= _BULK_DELETION_GUARD_MIN and len(
+        removal_candidates
+    ) > _BULK_DELETION_GUARD_FRACTION * len(mapping):
+        msg = (
+            f"Discord cleanup: refusing to delete {len(removal_candidates)} of "
+            f"{len(mapping)} threads in one sync — exceeds the bulk-deletion "
+            "guard (likely divergent/partial SavedVariables data). Skipping "
+            "removals; only 24h-expired cleanup will run."
+        )
+        log.warning(msg)
+        result.errors.append(msg)
+        removal_candidates = []
+
     ids_to_remove = []
-    for event_id, info in [] if no_events_guard else list(mapping.items()):
-        if event_id not in all_events or event_id in deleted_ids:
-            not_in_events = event_id not in all_events
-            in_deleted = event_id in deleted_ids
-            log.info(
-                "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, thread=%s)",
-                event_id,
-                not_in_events,
-                in_deleted,
-                info.get("channel_id"),
-            )
-            ch_id = info.get("channel_id")
-            if ch_id:
-                try:
-                    discord.delete_thread(ch_id)
-                    result.deleted += 1
-                except Exception as e:
-                    result.errors.append(f"Discord thread delete error {event_id}: {e}")
-                    log.error("Discord thread delete error %s: %s", event_id, e)
-            ids_to_remove.append(event_id)
+    for event_id in removal_candidates:
+        info = mapping[event_id]
+        log.info(
+            "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, thread=%s)",
+            event_id,
+            event_id not in all_events,
+            event_id in deleted_ids,
+            info.get("channel_id"),
+        )
+        ch_id = info.get("channel_id")
+        if ch_id:
+            try:
+                discord.delete_thread(ch_id)
+                result.deleted += 1
+            except Exception as e:
+                result.errors.append(f"Discord thread delete error {event_id}: {e}")
+                log.error("Discord thread delete error %s: %s", event_id, e)
+        ids_to_remove.append(event_id)
 
     # Clean up: delete threads for events that happened 24+ hours ago
     for event_id, info in mapping.items():
@@ -827,7 +1035,11 @@ def compute_weekly_sync_plan(
                 cur_info,
             )
         )
-    elif mapping.get("hash") != cur_hash or mapping.get("week_key") != cur_week_key:
+    elif (
+        mapping.get("hash") != cur_hash or mapping.get("week_key") != cur_week_key
+    ) and not _would_blank_remote_week(
+        discord, mapping.get("channel_id"), mapping.get("channel_id"), cur_hash
+    ):
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.UPDATE,
@@ -862,6 +1074,8 @@ def compute_weekly_sync_plan(
     elif (
         mapping.get("next_hash") != nxt_hash
         or mapping.get("next_week_key") != nxt_week_key
+    ) and not _would_blank_remote_week(
+        discord, mapping.get("channel_id"), mapping.get("next_message_id"), nxt_hash
     ):
         plan.entries.append(
             SyncPlanEntry(
@@ -918,6 +1132,17 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
     channel_id = mapping.get("channel_id")
 
+    # Self-heal: if the mapped weekly thread was deleted externally, drop it so
+    # the adoption/creation path below recreates it instead of erroring on
+    # every PATCH. (ensure_unarchived also unarchives a live thread here.)
+    if channel_id and not discord.ensure_unarchived(channel_id):
+        log.warning(
+            "Weekly overview: mapped thread %s no longer exists — "
+            "re-adopting or recreating",
+            channel_id,
+        )
+        channel_id = None
+
     # Adopt an existing thread if another client already created it.
     # Try every supported language so a language switch doesn't recreate
     # the thread (e.g. an old "Wöchentliche Raid Übersicht" thread is
@@ -958,6 +1183,17 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
 
             if mapping_was_correct and same_week and same_hash:
                 result.skipped += 1
+            elif _would_blank_remote_week(discord, channel_id, starter_id, cur_hash):
+                # Local render is empty but the message currently shows a
+                # populated week — almost always a stale/incomplete local read
+                # (e.g. a second client whose SavedVariables lacks this week's
+                # events). Refuse to clobber good remote data. See the Google
+                # mass-deletion guard for the same philosophy.
+                log.warning(
+                    "Weekly overview: refusing to overwrite populated current "
+                    "week with an empty render (likely stale local data)"
+                )
+                result.skipped += 1
             elif discord.message_exists(channel_id, starter_id):
                 discord.update_weekly_image(
                     channel_id, starter_id, cur_image, cur_filename, cur_summary
@@ -976,6 +1212,14 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             same_week = mapping.get("next_week_key") == nxt_week_key
             same_hash = mapping.get("next_hash") == nxt_hash
             if same_week and same_hash:
+                result.skipped += 1
+            elif _would_blank_remote_week(
+                discord, channel_id, next_message_id, nxt_hash
+            ):
+                log.warning(
+                    "Weekly overview: refusing to overwrite populated next "
+                    "week with an empty render (likely stale local data)"
+                )
                 result.skipped += 1
             else:
                 discord.update_weekly_image(

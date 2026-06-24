@@ -101,7 +101,8 @@
       "discord_not_configured": "Discord ist nicht konfiguriert. Bitte discord_bot_token, discord_forum_id und discord_guild_id in der Konfiguration setzen.",
       "google_creds_missing_warning": "Google-Anmeldedaten nicht gefunden oder abgelaufen, Google-Kalender-Synchronisation wird übersprungen",
       "force_resync_deleting": "Resync erzwingen: {count} erfasste(r) Thread(s) werden gelöscht",
-      "force_resync_delete_failed": "Resync erzwingen: Thread {id} konnte nicht gelöscht werden: {error}"
+      "force_resync_delete_failed": "Resync erzwingen: Thread {id} konnte nicht gelöscht werden: {error}",
+      "version_deferred": "Eine neuere Client-Version ist aktiv — Discord-Synchronisation wird diesen Zyklus übersprungen, um neuere Daten nicht zu überschreiben. Bitte aktualisieren."
     }
   },
   "setup_wizard": {
@@ -242,7 +243,8 @@
     "weekday_abbrev": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
     "thread_with_word": "mit",
     "ping_confirmed": "Bestätigt",
-    "ping_newly_confirmed": "Neu bestätigt"
+    "ping_newly_confirmed": "Neu bestätigt",
+    "update_notice": "📢 Eine neue FGC-Sync Version (v{version}) ist verfügbar — bitte aktualisiere deinen Client, damit alle synchron bleiben."
   },
   "weekly": {
     "thread_name": "Wöchentliche Raid Übersicht",

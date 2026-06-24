@@ -16,6 +16,7 @@ from fgc_sync import i18n
 from fgc_sync.i18n import t, tl_for
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent
+from fgc_sync.services import client_registry as _registry
 from fgc_sync.services.roster_image import render_roster
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ BASE_URL = "https://discord.com/api/v10"
 
 _FILENAME_PATTERN = re.compile(r"roster_(.+)_h([a-f0-9]+)(?:_t(\d+))?\.png")
 _WEEKLY_FILENAME_PATTERN = re.compile(r"weekly_.+\.png")
+# Same shape as above but captures the embedded content hash so we can read the
+# image a message *currently* shows (independent of any one client's mapping).
+_WEEKLY_HASH_PATTERN = re.compile(r"weekly_.+_h([a-f0-9]+)_t\d+\.png")
 
 # Short raid names for thread titles
 RAID_SHORT_NAMES: dict[str, str] = {
@@ -230,8 +234,13 @@ class DiscordPoster:
                 return False
             raise
 
-    def ensure_unarchived(self, thread_id: str):
-        """Unarchive a forum thread if it has been auto-archived."""
+    def ensure_unarchived(self, thread_id: str) -> bool:
+        """Unarchive a forum thread if it has been auto-archived.
+
+        Returns ``False`` only when the thread no longer exists (404) so the
+        caller can self-heal by recreating it. A 403 (exists but inaccessible)
+        returns ``True`` — recreating in that case would just spawn a duplicate.
+        """
         try:
             data = self._request("GET", f"/channels/{thread_id}")
             if data and data.get("thread_metadata", {}).get("archived"):
@@ -239,9 +248,12 @@ class DiscordPoster:
                     "PATCH", f"/channels/{thread_id}", json={"archived": False}
                 )
                 log.debug("Discord: unarchived thread %s", thread_id)
+            return True
         except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code in (404, 403):
-                return
+            if e.response is not None and e.response.status_code == 404:
+                return False
+            if e.response is not None and e.response.status_code == 403:
+                return True
             raise
 
     def find_existing_thread(self, event: CalendarEvent) -> dict | None:
@@ -720,6 +732,121 @@ class DiscordPoster:
             if e.response is not None and e.response.status_code == 404:
                 return False
             raise
+
+    def get_weekly_image_hash(self, channel_id: str, message_id: str) -> str | None:
+        """Return the content hash embedded in *message_id*'s weekly image.
+
+        Reads the attachment filename (``weekly_<week>_h<hash>_t<mtime>.png``)
+        directly from Discord, so callers can tell what a message *actually*
+        shows regardless of their own local mapping — needed to avoid an empty
+        local render clobbering a populated image another client pushed.
+        Returns ``None`` if the message is gone or carries no weekly image.
+        """
+        try:
+            msg = self._request("GET", f"/channels/{channel_id}/messages/{message_id}")
+        except requests.HTTPError:
+            return None
+        if not isinstance(msg, dict):
+            return None
+        for att in msg.get("attachments", []):
+            m = _WEEKLY_HASH_PATTERN.match(att.get("filename", ""))
+            if m:
+                return m.group(1)
+        return None
+
+    def read_client_registry(self, channel_id: str) -> tuple[dict, str | None]:
+        """Find the client-registry control message in *channel_id*.
+
+        Returns ``(registry_dict, message_id)`` — ``({}, None)`` if absent or
+        unreadable. The message is located by its marker so a lost id recovers.
+        """
+        try:
+            messages = self._request(
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+        except requests.HTTPError:
+            return {}, None
+        for msg in messages or []:
+            content = msg.get("content") or ""
+            if _registry.REGISTRY_MARKER in content:
+                return _registry.deserialize(content), msg.get("id")
+        return {}, None
+
+    def write_client_registry(
+        self,
+        channel_id: str,
+        content: str,
+        message_id: str | None = None,
+    ) -> str | None:
+        """Upsert the registry control message; returns its id.
+
+        PATCHes *message_id* when given (reposting if it 404s), else POSTs a
+        fresh message. ``allowed_mentions`` is empty so the registry never pings.
+        """
+        payload = {"content": content, "allowed_mentions": {"parse": []}}
+        if message_id:
+            try:
+                self._request(
+                    "PATCH",
+                    f"/channels/{channel_id}/messages/{message_id}",
+                    json=payload,
+                )
+                return message_id
+            except requests.HTTPError as e:
+                if e.response is None or e.response.status_code != 404:
+                    raise
+        data = self._request("POST", f"/channels/{channel_id}/messages", json=payload)
+        return data.get("id") if isinstance(data, dict) else None
+
+    def version_notice_exists(self, channel_id: str, version: str) -> bool:
+        """True if a notice for *version* was already posted (dedup)."""
+        try:
+            messages = self._request(
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+        except requests.HTTPError:
+            return False
+        token = f"{_registry.UPDATE_NOTICE_MARKER}{version}"
+        return any(token in (m.get("content") or "") for m in messages or [])
+
+    def post_version_notice(
+        self,
+        channel_id: str,
+        text: str,
+        names: list[str],
+        version: str,
+    ) -> str | None:
+        """Post a new-version notice, pinging the operators behind *names*.
+
+        Resolves each character name to a Discord member (same matching as
+        roster pings) and mentions the resolved users. Appends a dedup marker.
+        """
+        mentions: list[str] = []
+        for name in names:
+            user_id = self._find_member_id(name)
+            if user_id:
+                mention = f"<@{user_id}>"
+                if mention not in mentions:
+                    mentions.append(mention)
+        content = text
+        if mentions:
+            content += "\n" + " ".join(mentions)
+        content += f"\n{_registry.UPDATE_NOTICE_MARKER}{version}"
+        data = self._request(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            json={"content": content, "allowed_mentions": {"parse": ["users"]}},
+        )
+        log.info(
+            "Discord: posted version notice for %s, pinged %d operator(s)",
+            version,
+            len(mentions),
+        )
+        return data.get("id") if isinstance(data, dict) else None
 
     # -- Member lookup & pinging --
 

@@ -101,7 +101,8 @@
       "discord_not_configured": "Discord not configured. Set discord_bot_token, discord_forum_id, discord_guild_id in config.",
       "google_creds_missing_warning": "Google credentials not found or expired, skipping Google Calendar sync",
       "force_resync_deleting": "Force resync: deleting {count} tracked thread(s)",
-      "force_resync_delete_failed": "Force resync: failed to delete thread {id}: {error}"
+      "force_resync_delete_failed": "Force resync: failed to delete thread {id}: {error}",
+      "version_deferred": "A newer client version is active — skipping Discord sync this cycle to avoid clobbering newer data. Please update."
     }
   },
   "setup_wizard": {
@@ -242,7 +243,8 @@
     "weekday_abbrev": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     "thread_with_word": "with",
     "ping_confirmed": "Confirmed",
-    "ping_newly_confirmed": "Newly confirmed"
+    "ping_newly_confirmed": "Newly confirmed",
+    "update_notice": "📢 A new FGC-Sync version (v{version}) is available — please update your client so everyone stays in sync."
   },
   "weekly": {
     "thread_name": "Weekly Raid Overview",
