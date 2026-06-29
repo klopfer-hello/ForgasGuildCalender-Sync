@@ -77,6 +77,9 @@ def test_recreates_thread_when_mapped_one_is_gone(config, monkeypatch):
     discord.is_configured = True
     discord.clear_members_cache = MagicMock()
     discord.clear_thread_cache = MagicMock()
+    discord.find_ics_message = MagicMock(return_value=None)
+    discord.post_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
+    discord.update_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
     discord.ensure_unarchived = MagicMock(return_value=False)  # thread is gone (404)
     discord.find_event_threads = MagicMock(return_value=[])  # nothing to adopt
     discord.create_event_thread = MagicMock(
@@ -119,6 +122,9 @@ def test_live_thread_is_not_recreated(config, monkeypatch):
     discord.is_configured = True
     discord.clear_members_cache = MagicMock()
     discord.clear_thread_cache = MagicMock()
+    discord.find_ics_message = MagicMock(return_value=None)
+    discord.post_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
+    discord.update_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
     discord.ensure_unarchived = MagicMock(return_value=True)  # thread is alive
     discord.get_already_pinged_names = MagicMock(return_value={"Klopfbernd": "p1"})
     discord.ping_members = MagicMock(return_value={})

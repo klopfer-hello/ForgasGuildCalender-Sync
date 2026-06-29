@@ -17,6 +17,7 @@ from fgc_sync._version import __version__
 from fgc_sync.i18n import t, tl_for
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent
+from fgc_sync.services.ics import compute_ics_hash, ics_filename, render_ics
 from fgc_sync.services.roster_image import render_roster
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,9 @@ _FILENAME_PATTERN = re.compile(
     r"roster_(.+?)(?:_v[\d.]+)?_h([a-f0-9]+)(?:_t(\d+))?\.png"
 )
 _WEEKLY_FILENAME_PATTERN = re.compile(r"weekly_.+\.png")
+# Roster ICS attachment: ``<Raid>_<date>_h<hash>.ics``. The ``_h<hash>`` suffix
+# lets the thread scan detect a stale calendar file without downloading it.
+_ICS_FILENAME_PATTERN = re.compile(r"_h([a-f0-9]+)\.ics$")
 # Same shape as above but captures the embedded content hash so we can read the
 # image a message *currently* shows (independent of any one client's mapping).
 _WEEKLY_HASH_PATTERN = re.compile(r"weekly_.+_h([a-f0-9]+)_t\d+\.png")
@@ -617,6 +621,81 @@ class DiscordPoster:
         log.info("Discord: updated image %s for %s", image_msg_id, event.title)
         return message_ids
 
+    # -- Calendar (.ics) attachment --
+
+    def find_ics_message(self, channel_id: str) -> dict | None:
+        """Scan a thread for the 'Add to my calendar' .ics attachment.
+
+        Returns ``{"ics_id": <message_id>, "hash": <embedded_hash>}`` for the
+        first ``*.ics`` attachment found, or ``None``. One thread holds at most
+        one calendar file, so the extension alone identifies it; the embedded
+        ``_h<hash>`` tells the caller whether it is current.
+        """
+        try:
+            messages = self._request(
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+            for msg in messages or []:
+                for att in msg.get("attachments", []):
+                    m = _ICS_FILENAME_PATTERN.search(att.get("filename", ""))
+                    if m:
+                        return {"ics_id": msg["id"], "hash": m.group(1)}
+        except requests.HTTPError:
+            pass
+        return None
+
+    def post_ics(
+        self,
+        channel_id: str,
+        event: CalendarEvent,
+        timezone: str,
+        duration_hours: float,
+        content: str,
+    ) -> dict:
+        """Post the calendar (.ics) attachment as a new message in a thread.
+
+        Returns ``{"ics_id": <message_id>, "hash": <content_hash>}``.
+        """
+        content_hash = compute_ics_hash(event, timezone, duration_hours)
+        ics_bytes = render_ics(event, timezone, duration_hours)
+        filename = ics_filename(event, content_hash)
+        data = self._upload_image(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            ics_bytes,
+            filename,
+            content,
+            content_type="text/calendar",
+        )
+        ics_msg_id = data["id"]
+        log.info("Discord: posted calendar file %s for %s", ics_msg_id, event.title)
+        return {"ics_id": ics_msg_id, "hash": content_hash}
+
+    def update_ics(
+        self,
+        channel_id: str,
+        ics_msg_id: str,
+        event: CalendarEvent,
+        timezone: str,
+        duration_hours: float,
+    ) -> dict:
+        """Replace the .ics attachment on an existing message in place."""
+        content_hash = compute_ics_hash(event, timezone, duration_hours)
+        ics_bytes = render_ics(event, timezone, duration_hours)
+        filename = ics_filename(event, content_hash)
+        self._upload_image(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{ics_msg_id}",
+            ics_bytes,
+            filename,
+            "",
+            content_type="text/calendar",
+        )
+        log.info("Discord: updated calendar file %s for %s", ics_msg_id, event.title)
+        return {"ics_id": ics_msg_id, "hash": content_hash}
+
     def ping_members(
         self,
         channel_id: str,
@@ -1039,8 +1118,9 @@ class DiscordPoster:
         image_bytes: bytes,
         filename: str,
         content: str,
+        content_type: str = "image/png",
     ) -> dict:
-        files = {"files[0]": (filename, image_bytes, "image/png")}
+        files = {"files[0]": (filename, image_bytes, content_type)}
         data = {"content": content} if content else {}
         resp = self._retry_request(
             method,

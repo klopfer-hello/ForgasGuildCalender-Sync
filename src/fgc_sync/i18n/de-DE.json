@@ -243,7 +243,8 @@
     "weekday_abbrev": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
     "thread_with_word": "mit",
     "ping_confirmed": "Bestätigt",
-    "ping_newly_confirmed": "Neu bestätigt"
+    "ping_newly_confirmed": "Neu bestätigt",
+    "calendar_attachment": "📅 **Zu meinem Kalender hinzufügen** — Datei herunterladen, um diesen Raid in deine Kalender-App zu importieren."
   },
   "updates": {
     "thread_name": "📋 FGC-Sync Changelog",

@@ -650,6 +650,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     _ds_start = _time.monotonic()
     result = SyncResult()
     timezone = config.get("timezone", "Europe/Berlin")
+    duration_hours = float(config.get("default_duration_hours", 3))
 
     if not discord.is_configured:
         return result
@@ -866,6 +867,19 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             }
             pinged.update(newly_pinged)
 
+            # Ensure the "Add to my calendar" .ics attachment exists and is
+            # current. Posted as its own message beneath the roster image so
+            # members can one-tap import the raid into their calendar app.
+            ics_info = _sync_event_ics(
+                discord,
+                channel_id,
+                evt,
+                timezone,
+                duration_hours,
+                (existing or {}).get("ics"),
+                is_new_thread,
+            )
+
             unchanged = (
                 not is_new_thread
                 and msg_ids
@@ -880,6 +894,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 "channel_id": channel_id,
                 "message_ids": msg_ids,
                 "pinged": pinged,
+                "ics": ics_info,
             }
             _evt_elapsed = _time.monotonic() - _evt_start
             if _evt_elapsed > _SLOW_OPERATION_SECONDS:
@@ -1422,6 +1437,51 @@ def _find_participating_character(
         if p.name in character_names and Attendance.is_active(p.attendance):
             return p.name
     return None
+
+
+def _sync_event_ics(
+    discord: DiscordPoster,
+    channel_id: str,
+    event: CalendarEvent,
+    timezone: str,
+    duration_hours: float,
+    existing: dict | None,
+    is_new_thread: bool,
+) -> dict | None:
+    """Create / update / adopt the calendar (.ics) attachment for an event.
+
+    Mirrors the roster-image lifecycle: adopt an existing file before posting a
+    duplicate, PATCH in place when the content hash changes, skip when current.
+    Best-effort — a failure here never aborts the event sync. Returns the
+    ``{"ics_id", "hash"}`` mapping entry, or ``None`` on failure.
+    """
+    from fgc_sync.i18n import t as _t
+    from fgc_sync.services.ics import compute_ics_hash
+
+    label = _t("discord.calendar_attachment")
+    target_hash = compute_ics_hash(event, timezone, duration_hours)
+    try:
+        ics_id = (existing or {}).get("ics_id")
+        ics_hash = (existing or {}).get("hash")
+
+        # Recover the message id / current hash from the thread when the local
+        # mapping has lost track (new adoption, multi-client, legacy mapping).
+        if not is_new_thread and not ics_id:
+            found = discord.find_ics_message(channel_id)
+            if found:
+                ics_id = found["ics_id"]
+                ics_hash = found["hash"]
+
+        if not ics_id:
+            return discord.post_ics(channel_id, event, timezone, duration_hours, label)
+        if ics_hash != target_hash:
+            return discord.update_ics(
+                channel_id, ics_id, event, timezone, duration_hours
+            )
+        return {"ics_id": ics_id, "hash": ics_hash}
+    except Exception as e:  # best-effort; never break the event sync
+        log.warning("Discord: calendar file sync failed for %s: %s", event.title, e)
+        return existing
 
 
 def _event_to_datetime(event: CalendarEvent, timezone: str) -> datetime:

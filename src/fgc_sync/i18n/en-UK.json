@@ -243,7 +243,8 @@
     "weekday_abbrev": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     "thread_with_word": "with",
     "ping_confirmed": "Confirmed",
-    "ping_newly_confirmed": "Newly confirmed"
+    "ping_newly_confirmed": "Newly confirmed",
+    "calendar_attachment": "📅 **Add to my calendar** — download the file to import this raid into your calendar app."
   },
   "updates": {
     "thread_name": "📋 FGC-Sync Changelog",

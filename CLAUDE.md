@@ -114,7 +114,7 @@ Dot-separated, organized by area:
 - `preview.*` — Sync preview dialog (incl. `action_create` / `action_update` / `action_delete` for `SyncAction.value`)
 - `tray.*` — System tray menu and notifications
 - `app_controller.*` — Update prompts, About dialog
-- `discord.*` — Discord output (weekday array, `thread_with_word`, ping labels)
+- `discord.*` — Discord output (weekday array, `thread_with_word`, ping labels, `calendar_attachment` message)
 - `weekly.*` — Weekly overview thread name, image text, summary text
 - `roster.*` — Roster card image (full weekday array, stats line, section headers, role labels)
 
@@ -180,6 +180,7 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 - **Unping the difference too**: members in `pinged` who are no longer confirmed have their `<@id>` mention edited out of the original ping message via `remove_mentions` (replaced with `~~@<name>~~`, `allowed_mentions: {parse: []}`). Discord does not re-notify on edits, so the other members in the same message are not re-pinged. Names with an empty message id (legacy v1 entries pre-migration) are dropped from `pinged` without an edit
 - Re-adding a previously-removed member triggers a fresh "Newly confirmed" ping — they were dropped from `pinged` on removal, so the diff sees them as new
 - **Self-heal on 404**: a mapped thread that was deleted externally (another client's cleanup, manual delete) is detected via `ensure_unarchived` returning `False` (404 only; 403 returns `True` to avoid duplicating an inaccessible thread); the mapping entry is forgotten so the adopt-with-duplicate-collapse path above re-adopts a surviving thread or recreates one — clients never have to hand-clear `discord_message_mapping`. Mirrors Google's "verify before trust"
+- **Calendar attachment** (`_sync_event_ics`): each thread carries an "Add to my calendar" `.ics` file as its own message beneath the roster image, so members can one-tap import the raid. Rendered by `services/ics.py` (`render_ics` → single-VEVENT VCALENDAR, UTC times so no VTIMEZONE; start/duration from `serverTimeMinutes` + `default_duration_hours`). Mirrors the image lifecycle: adopt the existing `.ics` (scan via `find_ics_message`) before posting a duplicate, PATCH in place (`update_ics`) when `compute_ics_hash` changes, skip when current. The message text is the translated `discord.calendar_attachment`. Best-effort — a failure never aborts the event sync. Mapping entry: `discord_message_mapping[event_id]["ics"] = {ics_id, hash}`. The filename `<Raid>_<date>_h<hash>.ics` embeds the dedup hash so the thread scan detects staleness without downloading
 - Cleanup deletes threads for removed events and events older than `EXPIRED_EVENT_HOURS` (24h); 404 on already-deleted threads is silently ignored
 - **Bulk-deletion guard** (`_BULK_DELETION_GUARD_MIN=3`, `_BULK_DELETION_GUARD_FRACTION=0.5`): the all-empty `no_events_guard` only catches a *fully* empty parse. A divergent/partial read (another client on a different namespace, or whose SavedVariables lacks this guild's events) yields a non-empty-but-wrong set that marks many live events "removed". So if a single sync would delete `>= MIN` threads *and* `> FRACTION` of the mapping, the "not in events / deleted" removals are skipped entirely (only the 24h-expired cleanup runs) and the mapping is preserved. `compute_discord_sync_plan` mirrors this so the dry-run doesn't show removals the real sync would refuse
 
@@ -226,6 +227,7 @@ Called by the controller and CLI **before** the Discord/weekly syncs; if it retu
 - `channel_id`: Discord thread ID
 - `message_ids`: `{image_id, hash, sv_mtime}`
 - `pinged`: `{character_name: ping_message_id}` — the Discord message id is what `remove_mentions` edits when the member leaves the roster. Empty-string message id means "we know they were pinged but don't know which message" (legacy v1 rows migrated by `_migrate_to_v2`); they're treated as already-pinged but skipped on removal edits. Pre-v2 schema: `list[str]`. Pre-rename schema: lived under `confirmed`
+- `ics`: `{ics_id, hash}` — the "Add to my calendar" `.ics` attachment message id and its `compute_ics_hash`. Absent on legacy mappings; the first sync after upgrade posts the file (or adopts an existing one via `find_ics_message`)
 
 ---
 

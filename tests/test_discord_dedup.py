@@ -87,6 +87,9 @@ def test_keeps_highest_version_thread_and_deletes_the_rest(config, monkeypatch):
         return_value={"image_id": "img-new", "hash": content_hash}
     )
     discord.find_image_message = MagicMock(return_value="img-new")
+    discord.find_ics_message = MagicMock(return_value=None)
+    discord.post_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
+    discord.update_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
 
     result = sync_engine.execute_discord_sync(config, discord)
 
@@ -132,6 +135,9 @@ def test_dead_mapping_routes_through_dedup_and_collapses(config, monkeypatch):
     discord.message_exists = MagicMock(return_value=True)
     discord.update_event = MagicMock(return_value={"image_id": "new", "hash": "x"})
     discord.find_image_message = MagicMock(return_value="new")
+    discord.find_ics_message = MagicMock(return_value=None)
+    discord.post_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
+    discord.update_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
 
     sync_engine.execute_discord_sync(config, discord)
 
@@ -160,6 +166,9 @@ def test_single_thread_is_just_adopted(config, monkeypatch):
     discord.message_exists = MagicMock(return_value=True)
     discord.update_event = MagicMock(return_value={"image_id": "m1", "hash": "x"})
     discord.find_image_message = MagicMock(return_value="m1")
+    discord.find_ics_message = MagicMock(return_value=None)
+    discord.post_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
+    discord.update_ics = MagicMock(return_value={"ics_id": "ics1", "hash": "h"})
 
     sync_engine.execute_discord_sync(config, discord)
 
