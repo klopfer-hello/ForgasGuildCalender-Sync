@@ -95,10 +95,11 @@ class GoogleCalendarClient:
         duration_hours: int,
         description: str = "",
         location: str = "",
+        tentative: bool = False,
     ) -> str:
         """Create a calendar event. Returns the Google event ID."""
         body = self._build_event_body(
-            summary, start, duration_hours, description, location
+            summary, start, duration_hours, description, location, tentative
         )
         event = (
             self._get_service()
@@ -117,10 +118,11 @@ class GoogleCalendarClient:
         duration_hours: int,
         description: str = "",
         location: str = "",
+        tentative: bool = False,
     ):
         """Update an existing calendar event."""
         body = self._build_event_body(
-            summary, start, duration_hours, description, location
+            summary, start, duration_hours, description, location, tentative
         )
         (
             self._get_service()
@@ -208,6 +210,7 @@ class GoogleCalendarClient:
         duration_hours: int,
         description: str,
         location: str,
+        tentative: bool = False,
     ) -> dict:
         end = start + timedelta(hours=duration_hours)
         tz = str(start.tzinfo)
@@ -215,6 +218,11 @@ class GoogleCalendarClient:
             "summary": summary,
             "start": {"dateTime": start.isoformat(), "timeZone": tz},
             "end": {"dateTime": end.isoformat(), "timeZone": tz},
+            # A signed-but-not-confirmed sign-up maps to a tentative event
+            # shown as free (does not block availability); a confirmed
+            # sign-up is a normal confirmed event shown as busy.
+            "status": "tentative" if tentative else "confirmed",
+            "transparency": "transparent" if tentative else "opaque",
         }
         if description:
             body["description"] = description

@@ -13,6 +13,7 @@ from fgc_sync.services.sync_engine import (
     _collect_syncable_events,
     _event_to_datetime,
     _find_participating_character,
+    _is_tentative,
 )
 
 
@@ -129,6 +130,35 @@ class TestFindParticipatingCharacter:
         )
         result = _find_participating_character(evt, [])
         assert result is None
+
+
+# --- _is_tentative ---
+
+
+class TestIsTentative:
+    def test_signed_is_tentative(self):
+        evt = _make_event(participants=[_make_participant("Klopf", Attendance.SIGNED)])
+        assert _is_tentative(evt, "Klopf") is True
+
+    def test_confirmed_is_not_tentative(self):
+        evt = _make_event(
+            participants=[_make_participant("Klopf", Attendance.CONFIRMED)]
+        )
+        assert _is_tentative(evt, "Klopf") is False
+
+    def test_unknown_character_is_not_tentative(self):
+        evt = _make_event(participants=[_make_participant("Klopf", Attendance.SIGNED)])
+        assert _is_tentative(evt, "Someone") is False
+
+    def test_matches_named_character_not_others(self):
+        evt = _make_event(
+            participants=[
+                _make_participant("Signee", Attendance.SIGNED),
+                _make_participant("Klopf", Attendance.CONFIRMED),
+            ]
+        )
+        assert _is_tentative(evt, "Klopf") is False
+        assert _is_tentative(evt, "Signee") is True
 
 
 # --- _collect_syncable_events ---

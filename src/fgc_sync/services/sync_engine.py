@@ -43,6 +43,14 @@ EXPIRED_EVENT_HOURS = 24  # delete Discord threads this long after event start
 DISCORD_LOOKAHEAD_DAYS = 7  # only post events within this window
 _SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
 
+# Format version of the Google event body written by this code. Bumped
+# whenever the body gains a field that must be back-filled onto already-synced
+# events even when their revision/tentative state is unchanged (e.g. adding the
+# Busy/Free transparency field). A mapping entry whose stored `feat` differs
+# forces a one-time re-PATCH so existing events pick up the new field.
+#   1 = status (tentative) + transparency (Busy/Free)
+_EVENT_FEATURE_VERSION = 1
+
 # Bulk-deletion guard for per-event Discord cleanup. The all-empty guard
 # (no_events_guard) only catches a *fully* empty parse; a divergent or partial
 # read — e.g. another client resolving a different namespace, or one whose
@@ -247,7 +255,10 @@ def compute_sync_plan(
     for event_id, (evt, char_name) in syncable.items():
         existing = mapping.get(event_id)
         title = evt.summary_line(char_name)
+        tentative = _is_tentative(evt, char_name)
         info = f"{evt.confirmed_count} confirmed, {evt.signed_count} signed"
+        if tentative:
+            info += " (tentative)"
 
         if existing is None:
             plan.entries.append(
@@ -261,7 +272,11 @@ def compute_sync_plan(
                     info,
                 )
             )
-        elif existing.get("revision") != evt.revision:
+        elif (
+            existing.get("revision") != evt.revision
+            or existing.get("tentative") != tentative
+            or existing.get("feat") != _EVENT_FEATURE_VERSION
+        ):
             plan.entries.append(
                 SyncPlanEntry(
                     SyncAction.UPDATE,
@@ -346,6 +361,7 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
         summary = evt.summary_line(char_name)
         description = evt.description_text()
         location = evt.raid.replace("_", " ").title() if evt.raid else ""
+        tentative = _is_tentative(evt, char_name)
         existing = mapping.get(event_id)
 
         try:
@@ -362,22 +378,36 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
                         "google_id": found_id,
                         "revision": evt.revision,
                         "title": evt.title,
+                        "tentative": tentative,
+                        "feat": _EVENT_FEATURE_VERSION,
                     }
                     result.skipped += 1
                     log.info("Adopted existing: %s (%s)", summary, evt.date)
                 else:
                     google_id = gcal.create_event(
-                        calendar_id, summary, start_dt, duration, description, location
+                        calendar_id,
+                        summary,
+                        start_dt,
+                        duration,
+                        description,
+                        location,
+                        tentative,
                     )
                     mapping[event_id] = {
                         "google_id": google_id,
                         "revision": evt.revision,
                         "title": evt.title,
+                        "tentative": tentative,
+                        "feat": _EVENT_FEATURE_VERSION,
                     }
                     result.created += 1
                     log.info("Created: %s (%s)", summary, evt.date)
 
-            elif existing.get("revision") != evt.revision:
+            elif (
+                existing.get("revision") != evt.revision
+                or existing.get("tentative") != tentative
+                or existing.get("feat") != _EVENT_FEATURE_VERSION
+            ):
                 log.debug(
                     "Revision mismatch for %s (%s): stored=%r (%s) parsed=%r (%s)",
                     event_id,
@@ -396,20 +426,31 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
                         duration,
                         description,
                         location,
+                        tentative,
                     )
                     mapping[event_id]["revision"] = evt.revision
                     mapping[event_id]["title"] = evt.title
+                    mapping[event_id]["tentative"] = tentative
+                    mapping[event_id]["feat"] = _EVENT_FEATURE_VERSION
                     result.updated += 1
                     log.info("Updated: %s (%s)", summary, evt.date)
                 else:
                     # Event was deleted externally, re-create it
                     google_id = gcal.create_event(
-                        calendar_id, summary, start_dt, duration, description, location
+                        calendar_id,
+                        summary,
+                        start_dt,
+                        duration,
+                        description,
+                        location,
+                        tentative,
                     )
                     mapping[event_id] = {
                         "google_id": google_id,
                         "revision": evt.revision,
                         "title": evt.title,
+                        "tentative": tentative,
+                        "feat": _EVENT_FEATURE_VERSION,
                     }
                     result.created += 1
                     log.info(
@@ -419,12 +460,20 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
             elif not gcal.event_exists(calendar_id, existing["google_id"]):
                 # Revision unchanged but event deleted externally, re-create
                 google_id = gcal.create_event(
-                    calendar_id, summary, start_dt, duration, description, location
+                    calendar_id,
+                    summary,
+                    start_dt,
+                    duration,
+                    description,
+                    location,
+                    tentative,
                 )
                 mapping[event_id] = {
                     "google_id": google_id,
                     "revision": evt.revision,
                     "title": evt.title,
+                    "tentative": tentative,
+                    "feat": _EVENT_FEATURE_VERSION,
                 }
                 result.created += 1
                 log.info("Re-created (deleted externally): %s (%s)", summary, evt.date)
@@ -1437,6 +1486,18 @@ def _find_participating_character(
         if p.name in character_names and Attendance.is_active(p.attendance):
             return p.name
     return None
+
+
+def _is_tentative(evt: CalendarEvent, char_name: str) -> bool:
+    """True when the participating character is only Signed (not Confirmed).
+
+    Signed-but-not-confirmed sign-ups become tentative Google Calendar
+    events; confirmed sign-ups become normal (confirmed) events.
+    """
+    for p in evt.participants:
+        if p.name == char_name:
+            return p.attendance == Attendance.SIGNED
+    return False
 
 
 def _sync_event_ics(
