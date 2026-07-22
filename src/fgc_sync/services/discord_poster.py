@@ -55,17 +55,33 @@ def _version_filename_tag() -> str:
     return f"_v{__version__}" if __version__ != "dev" else ""
 
 
-# Short raid names for thread titles
+# Short raid names for thread titles. Keys cover both the addon's canonical
+# raid keys (EVENT_OPTIONS in the addon's UI-Editor.lua: ssc, tk, za, ...) and
+# the legacy long-form spellings older events used.
 RAID_SHORT_NAMES: dict[str, str] = {
     "karazhan": "Kara",
     "gruul": "Gruul",
     "magtheridon": "Maggi",
     "serpentshrine": "SSC",
+    "ssc": "SSC",
     "tempest_keep": "TK",
+    "tk": "TK",
     "hyjal": "Hyjal",
     "black_temple": "BT",
+    "bt": "BT",
     "sunwell": "SWP",
+    "swp": "SWP",
     "zulaman": "ZA",
+    "za": "ZA",
+    "ssc_tk": "SSC+TK",
+    "gruul_mag": "Gruul+Maggi",
+    "mc": "MC",
+    "ony": "Ony",
+    "bwl": "BWL",
+    "zg": "ZG",
+    "aq20": "AQ20",
+    "aq40": "AQ40",
+    "naxx": "Naxx",
 }
 
 # Roster size per raid. Drives the "full" highlight + "open spots" count
@@ -75,11 +91,25 @@ RAID_MAX_SIZE: dict[str, int] = {
     "gruul": 25,
     "magtheridon": 25,
     "serpentshrine": 25,
+    "ssc": 25,
     "tempest_keep": 25,
+    "tk": 25,
     "hyjal": 25,
     "black_temple": 25,
+    "bt": 25,
     "sunwell": 25,
+    "swp": 25,
     "zulaman": 10,
+    "za": 10,
+    "ssc_tk": 25,
+    "gruul_mag": 25,
+    "mc": 40,
+    "ony": 40,
+    "bwl": 40,
+    "zg": 20,
+    "aq20": 20,
+    "aq40": 40,
+    "naxx": 40,
 }
 RAID_MAX_SIZE_DEFAULT = 25
 

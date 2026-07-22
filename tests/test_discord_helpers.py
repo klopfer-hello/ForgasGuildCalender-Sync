@@ -114,5 +114,6 @@ class TestRaidShortNames:
         assert "zulaman" in RAID_SHORT_NAMES
 
     def test_values_are_short(self):
+        # 15 matches the truncation cap of the _short_raid_name fallback path.
         for key, short in RAID_SHORT_NAMES.items():
-            assert len(short) <= 5, f"{key} -> {short} is too long"
+            assert len(short) <= 15, f"{key} -> {short} is too long"

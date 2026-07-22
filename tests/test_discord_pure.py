@@ -9,6 +9,7 @@ from fgc_sync.services.discord_poster import (
     DiscordPoster,
     _short_raid_name,
     _slugify,
+    max_roster_size,
 )
 
 
@@ -68,6 +69,14 @@ class TestShortRaidName:
     def test_partial_match(self):
         assert _short_raid_name("karazhan_heroic") == "Kara"
 
+    def test_double_raids(self):
+        assert _short_raid_name("ssc_tk") == "SSC+TK"
+        assert _short_raid_name("gruul_mag") == "Gruul+Maggi"
+
+    def test_classic_raids(self):
+        assert _short_raid_name("aq40") == "AQ40"
+        assert _short_raid_name("naxx") == "Naxx"
+
     def test_unknown_raid_fallback(self):
         result = _short_raid_name("unknown_dungeon")
         assert result == "Unknown Dungeon"
@@ -78,6 +87,23 @@ class TestShortRaidName:
     def test_truncates_long_name(self):
         result = _short_raid_name("a_very_long_raid_name_that_exceeds_limit")
         assert len(result) <= 15
+
+
+# --- max_roster_size ---
+
+
+class TestMaxRosterSize:
+    def test_double_raids_are_25(self):
+        assert max_roster_size("ssc_tk") == 25
+        assert max_roster_size("gruul_mag") == 25
+
+    def test_gruul_mag_exact_key_wins_over_gruul_substring(self):
+        assert max_roster_size("gruul_mag") == 25
+        assert _short_raid_name("gruul_mag") == "Gruul+Maggi"
+
+    def test_classic_raids_are_40(self):
+        assert max_roster_size("aq40") == 40
+        assert max_roster_size("naxx") == 40
 
 
 # --- _slugify ---
