@@ -16,7 +16,11 @@ from fgc_sync.models import (
     SyncResult,
 )
 from fgc_sync.services.config import Config
-from fgc_sync.services.discord_poster import DiscordPoster, compute_event_hash
+from fgc_sync.services.discord_poster import (
+    DiscordPoster,
+    _short_raid_name,
+    compute_event_hash,
+)
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import (
     extract_events,
@@ -24,6 +28,7 @@ from fgc_sync.services.lua_parser import (
     list_character_names,
     parse_saved_variables,
 )
+from fgc_sync.services.raid_conflicts import mark_unavailable_participants
 from fgc_sync.services.updater import check_for_update
 from fgc_sync.services.weekly_overview import (
     EMPTY_WEEK_HASH,
@@ -360,7 +365,7 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
         start_dt = _event_to_datetime(evt, timezone)
         summary = evt.summary_line(char_name)
         description = evt.description_text()
-        location = evt.raid.replace("_", " ").title() if evt.raid else ""
+        location = _short_raid_name(evt.raid) if evt.raid else ""
         tentative = _is_tentative(evt, char_name)
         existing = mapping.get(event_id)
 
@@ -1434,6 +1439,9 @@ def _collect_all_future_events(
         return {}, set(), errors
 
     wow_events = extract_events(db, guild_key)
+    # Derive cross-event availability on the full list, before windowing:
+    # a conflicting confirmation may live outside the lookahead window.
+    mark_unavailable_participants(wow_events)
     deleted_ids = get_deleted_event_ids(db, guild_key)
     today = date.today()
     # Include events from yesterday so the 24-hour cleanup logic can

@@ -17,6 +17,9 @@ class Participant:
     group: int = 0
     slot: int = 0
     item_level: float = 0.0
+    # Derived, not stored in SavedVariables: signed here but confirmed in
+    # another event sharing a raid lockout (set by services.raid_conflicts).
+    unavailable: bool = False
 
 
 @dataclass

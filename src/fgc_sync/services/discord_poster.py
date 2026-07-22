@@ -156,6 +156,15 @@ def compute_event_hash(event: CalendarEvent) -> str:
     payload = (
         f"{event.event_id}|{event.revision}|{confirmed}|{signed}|{benched}|{groups}"
     )
+    # Appended only when present so events without conflicts keep their
+    # pre-2.13 hash and aren't all re-rendered on upgrade.
+    unavailable = sorted(
+        p.name
+        for p in event.participants
+        if p.attendance == Attendance.SIGNED and p.unavailable
+    )
+    if unavailable:
+        payload += f"|unavail={unavailable}"
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 

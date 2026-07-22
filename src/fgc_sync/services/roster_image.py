@@ -41,6 +41,7 @@ BORDER_COLOR = (60, 60, 80)
 TEXT_COLOR = (220, 220, 220)
 SUBTEXT_COLOR = (160, 160, 170)
 ACCENT_COLOR = (255, 183, 77)  # warm gold
+UNAVAILABLE_COLOR = (110, 110, 118)  # greyed name: picked by another raid
 
 # Scale factor for high-res output
 SCALE = 2
@@ -191,13 +192,20 @@ def _draw_participant(
     y: int,
     font: ImageFont.FreeTypeFont,
 ):
-    """Draw a single participant: role icon + class icon + name."""
+    """Draw a single participant: role icon + class icon + name.
+
+    Unavailable participants (signed here, confirmed in another raid sharing
+    the lockout) are greyed out like the addon's available-players list.
+    """
     role_icon = _get_role_icon(p.role_code)
     _paste_icon(img, role_icon, x + 3 * SCALE, y + 3 * SCALE)
     class_icon = _get_class_icon(p.class_code)
     if class_icon:
         _paste_icon(img, class_icon, x + 21 * SCALE, y + 3 * SCALE)
-    color = CLASS_COLORS.get(p.class_code, TEXT_COLOR)
+    if p.unavailable:
+        color = UNAVAILABLE_COLOR
+    else:
+        color = CLASS_COLORS.get(p.class_code, TEXT_COLOR)
     draw.text((x + 40 * SCALE, y + 3 * SCALE), p.name, fill=color, font=font)
 
 
@@ -210,6 +218,8 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
 
     confirmed = [p for p in event.participants if p.attendance == Attendance.CONFIRMED]
     signed = [p for p in event.participants if p.attendance == Attendance.SIGNED]
+    # Available players first, greyed-out (picked by another raid) last.
+    signed.sort(key=lambda p: p.unavailable)
     benched = [p for p in event.participants if p.attendance == Attendance.BENCHED]
 
     # Build groups from confirmed participants
@@ -271,7 +281,10 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
     title_line = f"{date_str}    {event.title}"
     draw.text((PADDING, 10 * SCALE), title_line, fill=ACCENT_COLOR, font=font_title)
 
-    location = event.raid.replace("_", " ").title() if event.raid else ""
+    # Imported lazily: discord_poster imports render_roster from this module.
+    from fgc_sync.services.discord_poster import _short_raid_name
+
+    location = _short_raid_name(event.raid) if event.raid else ""
     if location:
         draw.text((PADDING, 30 * SCALE), location, fill=SUBTEXT_COLOR, font=font)
 

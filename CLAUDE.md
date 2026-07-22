@@ -163,7 +163,7 @@ Read the function for the actual flow. Invariants that have to hold:
 - **Start**: date + serverTimeMinutes in configured timezone
 - **Duration**: configurable, default 3 hours
 - **Description**: event comment + participant counts + roster breakdown
-- **Location**: raid name (titlecased)
+- **Location**: short raid name (`_short_raid_name`, e.g. `TK`, `SSC+TK`)
 
 ---
 
@@ -187,7 +187,7 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 ### Forum Threads
 
 - **Thread name**: `<weekday> dd.mm. HH:MM — <Raid> <with-word> <creator>` (e.g. `Do 03.04. 20:00 — Gruul mit Forga` in `de-DE`, `Thu 03.04. 20:00 — Gruul with Forga` in `en-UK`). Built by `DiscordPoster._format_thread_name(event, language)`; the public `_thread_name` returns the active-language form. `_candidate_thread_names` returns every supported-language variant for cross-language dedup
-- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za (`RAID_SHORT_NAMES`) — *not* translated
+- **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za, plus double raids (`ssc_tk` → SSC+TK, `gruul_mag` → Gruul+Maggi) and classic raids (`aq40` → AQ40, `naxx` → Naxx) (`RAID_SHORT_NAMES`) — *not* translated. Exact-key lookup wins over the substring fallback, so `gruul_mag` is never shortened to plain "Gruul"
 - **Starter message**: roster image posted as part of thread creation
 - **Pings**: `discord.ping_confirmed` label on creation, `discord.ping_newly_confirmed` on updates (translated). `get_already_pinged_names` accepts every supported language's prefixes so language switches don't cause re-pings
 - **Cleanup**: threads deleted 24h after event start; 404 on already-deleted threads is silently ignored
@@ -196,10 +196,22 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 ### Roster Images (`roster_image.py`)
 
 - Rendered via Pillow at 2x resolution
-- **Header**: day of week, date, time, event title, location, participant counts
+- **Header**: day of week, date, time, event title, location (short raid name), participant counts
 - **Groups**: confirmed participants in raid groups (1–8) with role and class icons
 - **Sections**: Signed, Bench (no Declined)
+- **Unavailable greying**: signed players who are confirmed in *another* raid sharing the same lockout (different raid lead) render with a grey name (`UNAVAILABLE_COLOR`) and sort to the end of the Signed section — mirrors the greyed entries in the addon's "Available Players" list
 - **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
+
+### Cross-Event Availability (`services/raid_conflicts.py`)
+
+Replicates the addon's `GetPlayerConfirmedRaidIdConflictsForEvent` (Core-PackedStorage.lua): `mark_unavailable_participants(events)` sets `Participant.unavailable` on every **Signed** participant who is **Confirmed** on another non-cancelled raid event with a **different creator** that shares a raid lockout. Invariants:
+
+- Called in `_collect_all_future_events` on the **full** parsed event list *before* the 7-day windowing — a conflicting confirmation may live outside the lookahead window
+- Lockouts mirror the addon's `RAID_LOCKOUT_RULES`: weekly (Wednesday EU reset anchor) for everything except ZA/ZG/AQ20 (3-day cycle) and Ony (5-day cycle; cycles use a fixed epoch anchor — approximate but deterministic across clients)
+- Double raids decompose into component lockouts (`COMPONENT_RAID_KEYS`: `ssc_tk` → ssc+tk, `gruul_mag` → gruul+magtheridon), and legacy long-form raid values (`tempest_keep`, ...) normalize to the addon's canonical keys, so both spellings land on the same lockout
+- Cancelled events (event comment prefixed `!}`, the addon's `EVENT_CANCELLED_COMMENT_PREFIX`) neither receive nor produce conflicts
+- `compute_event_hash` appends the sorted unavailable names **only when non-empty**, so conflict-free events keep their pre-2.13 hash and aren't mass re-rendered on upgrade
+- The flag is derived state — never persisted, recomputed from SavedVariables every cycle, identical on every client for identical inputs (required for cross-client hash convergence)
 
 ### Member Matching
 
@@ -253,7 +265,7 @@ Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `W
 - **Header**: `Raid Übersicht — KW <nn> / <year>`, full date range (`dd.mm.yyyy – dd.mm.yyyy`), raid count
 - **Grid**: 7 day columns (Mo–So) × hourly rows. Hour range is **dynamic** — `_determine_hour_range` picks `min(earliest_event, 17)` down to `max(latest_event_end, start+4)+1` (trailing labeled row for end clarity), capped at 03:00 next day
 - **Event cell**: short name, time range (`20:00–22:30`), `RL: <leader>`, `Bestätigt: X` (just confirmed), `Angemeldet: Y` (just signed — **not** confirmed+signed), `Offen: Z` (= `max(0, max_roster - confirmed)`)
-- **Full-raid highlight**: when `confirmed_count >= max_roster_size(raid)` the cell renders green (`_EVENT_FILL_FULL` / `_EVENT_BORDER_FULL`) instead of the default blue. Roster sizes come from `discord_poster.RAID_MAX_SIZE` (Kara/ZA = 10, all other TBC 25-mans = 25, default `RAID_MAX_SIZE_DEFAULT = 25` for unknown raids); `max_roster_size(raid)` is the public lookup
+- **Full-raid highlight**: when `confirmed_count >= max_roster_size(raid)` the cell renders green (`_EVENT_FILL_FULL` / `_EVENT_BORDER_FULL`) instead of the default blue. Roster sizes come from `discord_poster.RAID_MAX_SIZE` (Kara/ZA = 10, all other TBC 25-mans = 25 including the `ssc_tk`/`gruul_mag` double raids, classic `aq40`/`naxx` = 40, default `RAID_MAX_SIZE_DEFAULT = 25` for unknown raids); `max_roster_size(raid)` is the public lookup
 - **Parallel raids**: greedy lane assignment per day column — overlapping raids sit side-by-side in equal-width lanes. Fonts shrink and labels abbreviate (`Best.`/`Angem.`/`Open`) for 3+ lanes
 - Duration constant: `WEEKLY_EVENT_DURATION_HOURS` (fractional supported)
 
