@@ -111,6 +111,16 @@ Creates a forum thread per raid, posts a rendered roster image as the starter me
 
 Thread names follow the format: `Do 10.04. 20:00 — Kara mit Forga` (de-DE) or `Thu 10.04. 20:00 — Kara with Forga` (en-UK). Threads created under one language remain discoverable after switching to the other — no orphaned duplicates.
 
+**Member matching:** a WoW character is pinged when its name appears (case-insensitive) inside a member's server nickname, display name, or username. Members with many twinks can instead put a **wildcard pattern in their server nickname** — any of `- _ . * + ~ ?` stands for "anything (or nothing)". The nickname is split on `|` `/` `,` and each part is tried on its own, so decorative separators are fine:
+
+| Server nickname | Matches |
+|-----------------|---------|
+| `Exo* \| Maximilian` | Exototem, Exomer, Exower, Exonova, ... |
+| `-Pieps / Krissi` | Schampieps, Dosenpieps, Profitpieps, ... |
+| `Vonda.i` | Vondai, Vondaai |
+
+A wildcard part must match the *whole* character name (`Exo*` matches Exomer but not Totemexo), and wildcards only work in the server nickname — dots and underscores in Discord usernames are taken literally.
+
 **Setup:**
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications), create an application

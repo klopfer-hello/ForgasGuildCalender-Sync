@@ -55,6 +55,48 @@ def _version_filename_tag() -> str:
     return f"_v{__version__}" if __version__ != "dev" else ""
 
 
+# Wildcard characters a guild member may embed in their server nickname to
+# match several WoW characters (twinks) at once, e.g. ``Exo* | Maximilian``
+# or ``-Pieps / Krissi``. Each wildcard stands for any run of characters,
+# including none. A nickname segment containing one is matched against the
+# *whole* character name (fullmatch), unlike the plain substring check.
+_NICK_WILDCARD_CHARS = frozenset("-_.*+~?")
+# Separators splitting a nickname into independently matched segments.
+_NICK_SEGMENT_SEPARATOR = re.compile(r"[|/,]")
+
+
+def _compile_nick_segment(segment: str) -> re.Pattern | None:
+    """Compile a nickname segment into a wildcard pattern, or ``None``.
+
+    ``None`` means the segment takes no part in wildcard matching: either it
+    contains no wildcard character (the plain substring check covers it), or
+    it consists *only* of wildcards/whitespace (it would match every
+    character name, which is never intended).
+    """
+    segment = segment.strip()
+    if not any(ch in _NICK_WILDCARD_CHARS for ch in segment):
+        return None
+    if all(ch in _NICK_WILDCARD_CHARS or ch.isspace() for ch in segment):
+        return None
+    parts: list[str] = []
+    for ch in segment:
+        if ch in _NICK_WILDCARD_CHARS:
+            if not parts or parts[-1] != ".*":
+                parts.append(".*")
+        else:
+            parts.append(re.escape(ch))
+    return re.compile("".join(parts), re.IGNORECASE)
+
+
+def _nick_wildcard_match(nick: str, character_name: str) -> bool:
+    """True if any wildcard segment of *nick* matches the full character name."""
+    for segment in _NICK_SEGMENT_SEPARATOR.split(nick):
+        pattern = _compile_nick_segment(segment)
+        if pattern and pattern.fullmatch(character_name):
+            return True
+    return False
+
+
 # Short raid names for thread titles. Keys cover both the addon's canonical
 # raid keys (EVENT_OPTIONS in the addon's UI-Editor.lua: ssc, tk, za, ...) and
 # the legacy long-form spellings older events used.
@@ -1115,7 +1157,10 @@ class DiscordPoster:
 
     def _find_member_id(self, character_name: str) -> str | None:
         char_lower = character_name.lower()
-        for member in self._get_members():
+        members = self._get_members()
+        # Pass 1: plain substring match — an exact/verbatim name always wins
+        # over another member's wildcard pattern.
+        for member in members:
             nick = (member.get("nick") or "").lower()
             user = member.get("user", {})
             global_name = (user.get("global_name") or "").lower()
@@ -1126,6 +1171,11 @@ class DiscordPoster:
                 or char_lower in username
             ):
                 return user.get("id")
+        # Pass 2: wildcard patterns embedded in server nicknames only —
+        # usernames routinely contain "." and "_" without wildcard intent.
+        for member in members:
+            if _nick_wildcard_match(member.get("nick") or "", character_name):
+                return member.get("user", {}).get("id")
         return None
 
     # -- HTTP helpers --

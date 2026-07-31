@@ -217,6 +217,14 @@ Replicates the addon's `GetPlayerConfirmedRaidIdConflictsForEvent` (Core-PackedS
 
 WoW character name matched as **case-insensitive substring** of Discord server nickname, display name, or username. Requires **Server Members Intent** on the bot.
 
+**Nickname wildcards** (for members with many twinks): the **server nickname only** may embed wildcard characters — `- _ . * + ~ ?` — each meaning "any run of characters, including none". The nickname is split into segments on `|` `/` `,`; a segment containing a wildcard is compiled to a pattern (`_compile_nick_segment`) and must match the **whole** character name (fullmatch, case-insensitive). Examples: `Exo* | Maximilian` matches Exototem/Exomer/Exonova; `-Pieps / Krissi` matches Schampieps/Dosenpieps; `Vonda.i` matches Vondai and Vondaai. Invariants:
+
+- Plain substring matching runs first over **all** members — a verbatim name always beats another member's wildcard pattern
+- Wildcards are **not** interpreted in display names or usernames (usernames routinely contain `.`/`_` without wildcard intent)
+- Segments without wildcards keep pure substring semantics (no reverse "segment in character name" matching)
+- Pure-wildcard segments (e.g. a nickname of just `*`) are ignored — they'd match everyone
+- Regex metacharacters in nicknames are escaped (literal), only the wildcard set is special
+
 ### Multi-Client Safety
 
 - Image filename: `roster_<event_id>[_v<version>]_h<hash>_t<sv_mtime>.png` (the `_v<version>` segment is the cross-client version signal; legacy names without it still parse)
