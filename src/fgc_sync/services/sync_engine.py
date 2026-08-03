@@ -613,6 +613,9 @@ def compute_discord_sync_plan(
 
             old_hash = (msg_ids or {}).get("hash")
             change_bits: list[str] = []
+            new_name = discord.pending_thread_rename(channel_id, evt)
+            if new_name:
+                change_bits.append(f"rename thread to {new_name!r}")
             if to_ping:
                 change_bits.append(f"ping {len(to_ping)} new")
             if to_remove:
@@ -772,6 +775,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             msg_ids = (existing or {}).get("message_ids")
             prev_pinged = _coerce_pinged(existing)
             is_new_thread = False
+            renamed = False
 
             # Self-heal: verify a mapped thread still exists. A 404 means it was
             # deleted externally (another client's cleanup, manual delete) — forget
@@ -842,10 +846,16 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 is_new_thread = True
                 result.created += 1
             else:
-                # Existing thread (already unarchived above)
+                # Existing thread (already unarchived above). Keep the thread
+                # name in step with the event first — an in-game time, date,
+                # raid or creator change makes the stored name wrong, and a
+                # stale name also breaks name-based adoption for other clients.
+                renamed = discord.sync_thread_name(channel_id, evt)
+
                 if msg_ids and msg_ids.get("hash") == content_hash:
                     # Image up to date — fall through to ping retry below
-                    pass
+                    if renamed:
+                        result.updated += 1
                 else:
                     # Content changed — update image in place, or find it
                     # if the local mapping lost track of the message ID
@@ -940,6 +950,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 and msg_ids.get("hash") == content_hash
                 and not newly_pinged
                 and not removals
+                and not renamed
             )
             if unchanged:
                 result.skipped += 1

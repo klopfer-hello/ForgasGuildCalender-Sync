@@ -195,11 +195,21 @@ def compute_event_hash(event: CalendarEvent) -> str:
     groups = sorted(
         (p.name, p.group, p.slot) for p in event.participants if p.group > 0
     )
-    payload = (
-        f"{event.event_id}|{event.revision}|{confirmed}|{signed}|{benched}|{groups}"
+    # Header fields the roster image renders. Required because an in-game
+    # edit of the time, date, title or raid changes the image without
+    # necessarily touching the roster — and the addon does not reliably bump
+    # `revision` for every such edit, which would otherwise leave the thread
+    # showing the old time forever.
+    header = (
+        f"{event.date}|{event.server_hour:02d}:{event.server_minute:02d}"
+        f"|{event.title}|{event.raid}"
     )
-    # Appended only when present so events without conflicts keep their
-    # pre-2.13 hash and aren't all re-rendered on upgrade.
+    payload = (
+        f"{event.event_id}|{event.revision}|{confirmed}|{signed}"
+        f"|{benched}|{groups}|{header}"
+    )
+    # Appended only when present — kept conditional for continuity with the
+    # 2.13 hash layout.
     unavailable = sorted(
         p.name
         for p in event.participants
@@ -365,6 +375,84 @@ class DiscordPoster:
             if e.response is not None and e.response.status_code == 403:
                 return True
             raise
+
+    def _get_thread_name(self, thread_id: str) -> str | None:
+        """Current name of *thread_id*, or ``None`` if it can't be determined.
+
+        Served from the per-cycle forum cache when possible so the common case
+        costs no extra API call.
+        """
+        for thread in self._forum_threads_cache or []:
+            if thread.get("id") == thread_id:
+                return thread.get("name")
+        try:
+            data = self._request("GET", f"/channels/{thread_id}")
+        except requests.HTTPError:
+            return None
+        return (data or {}).get("name") if isinstance(data, dict) else None
+
+    def pending_thread_rename(self, thread_id: str, event: CalendarEvent) -> str | None:
+        """Return the name *thread_id* should be renamed to, or ``None``.
+
+        Read-only — shared by the sync and the dry-run plan. ``None`` means no
+        rename is needed: either the name already matches the event in the
+        active language, or it matches it in *another* supported language (in
+        which case renaming would just start a tug-of-war with a client running
+        that language, exactly like thread adoption avoids).
+        """
+        current = self._get_thread_name(thread_id)
+        if current is None or current in set(self._candidate_thread_names(event)):
+            return None
+        desired = self._thread_name(event)
+        return desired if desired != current else None
+
+    def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Rename a forum thread. Returns ``True`` if Discord accepted it.
+
+        Deliberately bypasses :meth:`_retry_request`: thread renames sit in a
+        2-per-10-minutes bucket, so its blind ``sleep(retry_after)`` would
+        stall the whole sync cycle for minutes. A rate-limited rename is simply
+        skipped — the next cycle retries it, and nothing downstream depends on
+        the name being current.
+        """
+        try:
+            resp = self._session.request(
+                "PATCH",
+                f"{BASE_URL}/channels/{thread_id}",
+                json={"name": name},
+                headers={"Content-Type": "application/json"},
+                timeout=_HTTP_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            log.warning("Discord: rename of thread %s failed: %s", thread_id, e)
+            return False
+        if resp.status_code >= 400:
+            log.warning(
+                "Discord: rename of thread %s rejected (%s)",
+                thread_id,
+                resp.status_code,
+            )
+            return False
+        for thread in self._forum_threads_cache or []:
+            if thread.get("id") == thread_id:
+                thread["name"] = name
+        return True
+
+    def sync_thread_name(self, thread_id: str, event: CalendarEvent) -> bool:
+        """Bring a thread's name in line with the event. Returns ``True`` if
+        it was renamed.
+
+        Covers in-game edits of the time, date, raid or creator, all of which
+        feed :meth:`_format_thread_name`. Best-effort — a missing Manage
+        Threads permission or a rate limit never aborts the event sync.
+        """
+        desired = self.pending_thread_rename(thread_id, event)
+        if desired is None:
+            return False
+        if not self.rename_thread(thread_id, desired):
+            return False
+        log.info("Discord: renamed thread %s to %r", thread_id, desired)
+        return True
 
     def find_existing_thread(self, event: CalendarEvent) -> dict | None:
         """Search forum threads for one that belongs to this event.

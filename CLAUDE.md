@@ -187,6 +187,7 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 ### Forum Threads
 
 - **Thread name**: `<weekday> dd.mm. HH:MM — <Raid> <with-word> <creator>` (e.g. `Do 03.04. 20:00 — Gruul mit Forga` in `de-DE`, `Thu 03.04. 20:00 — Gruul with Forga` in `en-UK`). Built by `DiscordPoster._format_thread_name(event, language)`; the public `_thread_name` returns the active-language form. `_candidate_thread_names` returns every supported-language variant for cross-language dedup
+- **Thread rename on edit**: an in-game change to time, date, raid or creator makes the stored name wrong, so every sync calls `sync_thread_name(thread_id, event)` on existing threads. `pending_thread_rename` is the read-only predicate (shared with `compute_discord_sync_plan`) — it returns `None` when the current name matches the event in **any** supported language, so an en-UK and a de-DE client don't rename the thread back and forth each cycle. The current name comes from the per-cycle forum-thread cache (one GET fallback if absent). `rename_thread` deliberately **bypasses `_retry_request`**: Discord's thread-rename bucket is 2 per 10 minutes and blindly sleeping `retry_after` would stall the sync — a rate-limited rename is skipped and retried next cycle. Best-effort throughout; missing Manage Threads never aborts the event sync
 - **Short raid names**: kara, gruul, maggi, ssc, tk, hyjal, bt, swp, za, plus double raids (`ssc_tk` → SSC+TK, `gruul_mag` → Gruul+Maggi) and classic raids (`aq40` → AQ40, `naxx` → Naxx) (`RAID_SHORT_NAMES`) — *not* translated. Exact-key lookup wins over the substring fallback, so `gruul_mag` is never shortened to plain "Gruul"
 - **Starter message**: roster image posted as part of thread creation
 - **Pings**: `discord.ping_confirmed` label on creation, `discord.ping_newly_confirmed` on updates (translated). `get_already_pinged_names` accepts every supported language's prefixes so language switches don't cause re-pings
@@ -210,7 +211,7 @@ Replicates the addon's `GetPlayerConfirmedRaidIdConflictsForEvent` (Core-PackedS
 - Lockouts mirror the addon's `RAID_LOCKOUT_RULES`: weekly (Wednesday EU reset anchor) for everything except ZA/ZG/AQ20 (3-day cycle) and Ony (5-day cycle; cycles use a fixed epoch anchor — approximate but deterministic across clients)
 - Double raids decompose into component lockouts (`COMPONENT_RAID_KEYS`: `ssc_tk` → ssc+tk, `gruul_mag` → gruul+magtheridon), and legacy long-form raid values (`tempest_keep`, ...) normalize to the addon's canonical keys, so both spellings land on the same lockout
 - Cancelled events (event comment prefixed `!}`, the addon's `EVENT_CANCELLED_COMMENT_PREFIX`) neither receive nor produce conflicts
-- `compute_event_hash` appends the sorted unavailable names **only when non-empty**, so conflict-free events keep their pre-2.13 hash and aren't mass re-rendered on upgrade
+- `compute_event_hash` appends the sorted unavailable names **only when non-empty** (kept conditional for continuity with the 2.13 hash layout)
 - The flag is derived state — never persisted, recomputed from SavedVariables every cycle, identical on every client for identical inputs (required for cross-client hash convergence)
 
 ### Member Matching
@@ -497,6 +498,8 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
 - Before posting a new image, always try `find_image_message` to locate the original
 - Deleting an already-deleted thread (404) must be handled silently
+- `compute_event_hash` must cover **every field the roster image displays** — including the header (date, `serverTimeMinutes`, title, raid), not just the roster. `revision` alone is not a reliable change signal: the addon does not bump it for every in-game edit
+- Never rename a thread whose current name is a valid `_candidate_thread_names` variant — that's another language's client, not a stale name
 
 ### Weekly Overview
 
