@@ -68,11 +68,16 @@ def _mapping(n: int) -> dict:
     return {f"e{i}": {"channel_id": f"chan-{i}"} for i in range(n)}
 
 
-def _patch_collect(monkeypatch, all_events: dict, deleted_ids=None):
+def _patch_collect(monkeypatch, all_events: dict, deleted_ids=None, expired_ids=None):
     monkeypatch.setattr(
         sync_engine,
         "_collect_all_future_events",
-        lambda config: (all_events, set(deleted_ids or ()), []),
+        lambda config: (
+            all_events,
+            set(deleted_ids or ()),
+            [],
+            set(expired_ids or ()),
+        ),
     )
     monkeypatch.setattr(
         sync_engine, "_is_local_data_stale", lambda config, discord: False
@@ -107,3 +112,66 @@ class TestBulkDeletionGuard:
         assert discord.delete_thread.call_count == 2
         assert result.deleted == 2
         assert config.get("discord_message_mapping") == {}
+
+    def test_expired_entries_bypass_guard(self, config, monkeypatch):
+        """Events that merely aged out of the window are plain expiry.
+
+        Regression: a client sidelined for days (stale-data guard / version
+        gate) accumulates mapping entries for raids older than yesterday. Those
+        events are still in SavedVariables, but the collector drops them from
+        ``all_events``, so they used to count as "removed" — 11 of 21 tripped
+        the guard every cycle and cleanup stalled permanently.
+        """
+        mapping = _mapping(13)
+        config.set("discord_message_mapping", mapping)
+        _patch_collect(
+            monkeypatch,
+            {"other": _expired_event("other")},
+            expired_ids=set(mapping),
+        )
+        discord = _make_discord()
+
+        result = sync_engine.execute_discord_sync(config, discord)
+
+        assert discord.delete_thread.call_count == 13
+        assert result.deleted == 13
+        assert config.get("discord_message_mapping") == {}
+        assert not any("bulk-deletion guard" in e.lower() for e in result.errors)
+
+    def test_expired_entries_do_not_count_toward_guard(self, config, monkeypatch):
+        """Mixed: expired entries are removed; genuinely missing ones stay guarded."""
+        config.set("discord_message_mapping", _mapping(10))
+        expired = {f"e{i}" for i in range(4)}  # e0..e3 aged out
+        # e4..e9 are missing from the parse: 6 >= MIN and 6 > 0.5 * 10 → guarded
+        _patch_collect(
+            monkeypatch, {"other": _expired_event("other")}, expired_ids=expired
+        )
+        discord = _make_discord()
+
+        result = sync_engine.execute_discord_sync(config, discord)
+
+        deleted_threads = {c.args[0] for c in discord.delete_thread.call_args_list}
+        assert deleted_threads == {f"chan-{i}" for i in range(4)}
+        assert result.deleted == 4
+        assert set(config.get("discord_message_mapping")) == {
+            f"e{i}" for i in range(4, 10)
+        }
+        assert any("bulk-deletion guard" in e.lower() for e in result.errors)
+
+    def test_dry_run_plan_mirrors_expired_bypass(self, config, monkeypatch):
+        """compute_discord_sync_plan lists expired entries and no guard error."""
+        mapping = _mapping(13)
+        config.set("discord_message_mapping", mapping)
+        _patch_collect(
+            monkeypatch,
+            {"other": _expired_event("other")},
+            expired_ids=set(mapping),
+        )
+        discord = _make_discord()
+
+        plan = sync_engine.compute_discord_sync_plan(config, discord)
+
+        deletes = [e for e in plan.entries if e.action.value == "delete"]
+        assert {e.event_id for e in deletes} == set(mapping)
+        assert all(e.participants_info == "expired" for e in deletes)
+        assert not any("bulk-deletion guard" in e.lower() for e in plan.errors)

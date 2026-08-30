@@ -50,7 +50,7 @@ def _patch_collect(monkeypatch, all_events):
     monkeypatch.setattr(
         sync_engine,
         "_collect_all_future_events",
-        lambda config: (all_events, set(), []),
+        lambda config: (all_events, set(), [], set()),
     )
     monkeypatch.setattr(
         sync_engine, "_is_local_data_stale", lambda config, discord: False

@@ -533,7 +533,7 @@ def compute_discord_sync_plan(
     if not discord.is_configured:
         return plan
 
-    all_events, deleted_ids, errors = _collect_all_future_events(config)
+    all_events, deleted_ids, errors, expired_ids = _collect_all_future_events(config)
     plan.errors.extend(errors)
     if errors:
         return plan
@@ -652,10 +652,13 @@ def compute_discord_sync_plan(
     # Events in mapping but no longer in WoW or deleted. Mirror the execute
     # path's bulk-deletion guard so the dry-run doesn't show removals that the
     # real sync would refuse (divergent/partial parse).
+    # Entries whose event has merely aged out of the window (expired_ids) are
+    # plain expiry and bypass the guard, exactly as in execute_discord_sync.
     removal_candidates = [
         event_id
         for event_id in mapping
-        if event_id not in all_events or event_id in deleted_ids
+        if event_id not in expired_ids
+        and (event_id not in all_events or event_id in deleted_ids)
     ]
     bulk_guarded = len(removal_candidates) >= _BULK_DELETION_GUARD_MIN and len(
         removal_candidates
@@ -667,6 +670,19 @@ def compute_discord_sync_plan(
         )
 
     for event_id, _info_map in mapping.items():
+        if event_id in expired_ids:
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.DELETE,
+                    event_id,
+                    event_id,
+                    "",
+                    "",
+                    "",
+                    "expired",
+                )
+            )
+            continue
         if event_id not in all_events or event_id in deleted_ids:
             if not bulk_guarded:
                 plan.entries.append(
@@ -712,7 +728,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     if not discord.is_configured:
         return result
 
-    all_events, deleted_ids, errors = _collect_all_future_events(config)
+    all_events, deleted_ids, errors, expired_ids = _collect_all_future_events(config)
     result.errors.extend(errors)
     if errors:
         return result
@@ -975,13 +991,21 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     # When the no-events guard is active, skip this phase — we can't tell
     # "genuinely removed" from "parser couldn't see them" — and only let the
     # 24h-expired cleanup below run (which is a no-op when all_events is empty).
+    # Mapping entries whose event is still in SavedVariables but has slipped out
+    # of the Discord window (older than yesterday) are ordinary expiry, not
+    # evidence of a divergent parse: they are always removed and never counted
+    # toward the bulk-deletion guard. Otherwise a client that sat out a while
+    # (stale-data guard, version gate) accumulates enough expired entries to
+    # trip the guard on every cycle and its cleanup stalls permanently.
+    expired_removals = [event_id for event_id in mapping if event_id in expired_ids]
     removal_candidates = (
         []
         if no_events_guard
         else [
             event_id
             for event_id in mapping
-            if event_id not in all_events or event_id in deleted_ids
+            if event_id not in expired_ids
+            and (event_id not in all_events or event_id in deleted_ids)
         ]
     )
 
@@ -989,7 +1013,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     # events look "removed" at once (the all-empty guard above only catches a
     # fully-empty parse). Deleting a thread is permanent, so when a single sync
     # would remove an implausibly large share of the mapping, skip these
-    # removals entirely and let only the 24h-expired cleanup run.
+    # removals entirely and let only the expired cleanup run.
     if len(removal_candidates) >= _BULK_DELETION_GUARD_MIN and len(
         removal_candidates
     ) > _BULK_DELETION_GUARD_FRACTION * len(mapping):
@@ -1004,11 +1028,13 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
         removal_candidates = []
 
     ids_to_remove = []
-    for event_id in removal_candidates:
+    for event_id in expired_removals + removal_candidates:
         info = mapping[event_id]
         log.info(
-            "Discord cleanup: removing %s (not_in_all_events=%s, in_deleted_ids=%s, thread=%s)",
+            "Discord cleanup: removing %s (expired=%s, not_in_all_events=%s, "
+            "in_deleted_ids=%s, thread=%s)",
             event_id,
+            event_id in expired_ids,
             event_id not in all_events,
             event_id in deleted_ids,
             info.get("channel_id"),
@@ -1430,24 +1456,33 @@ def _collect_syncable_events(
 
 def _collect_all_future_events(
     config: Config,
-) -> tuple[dict[str, CalendarEvent], set[str], list[str]]:
-    """Return all future events for the guild, regardless of participation."""
+) -> tuple[dict[str, CalendarEvent], set[str], list[str], set[str]]:
+    """Return all future events for the guild, regardless of participation.
+
+    Returns ``(events, deleted_ids, errors, expired_ids)``. ``expired_ids``
+    holds the ids of events that *were* parsed but fell out of the Discord
+    window because their date is older than yesterday. The cleanup paths use
+    it to tell ordinary expiry (thread should go, mapping entry should go)
+    apart from an event that vanished from SavedVariables (possibly a
+    divergent parse, subject to the bulk-deletion guard).
+    """
     errors: list[str] = []
+    expired_ids: set[str] = set()
     sv_path = config.saved_variables_path
     if not sv_path or not sv_path.exists():
         errors.append(f"SavedVariables not found: {sv_path}")
-        return {}, set(), errors
+        return {}, set(), errors, expired_ids
 
     guild_key = config.get("guild_key")
     if not guild_key:
         errors.append("Guild key not configured")
-        return {}, set(), errors
+        return {}, set(), errors, expired_ids
 
     try:
         db = parse_saved_variables(sv_path)
     except Exception as e:
         errors.append(f"Failed to parse SavedVariables: {e}")
-        return {}, set(), errors
+        return {}, set(), errors, expired_ids
 
     wow_events = extract_events(db, guild_key)
     # Derive cross-event availability on the full list, before windowing:
@@ -1472,6 +1507,8 @@ def _collect_all_future_events(
             )
             continue
         if evt_date < earliest or evt_date > cutoff:
+            if evt_date < earliest:
+                expired_ids.add(evt.event_id)
             log.debug(
                 "Discord collect: skipping %s (%s) — date %s outside window [%s, %s]",
                 evt.event_id,
@@ -1495,7 +1532,7 @@ def _collect_all_future_events(
             continue
         result[evt.event_id] = evt
 
-    return result, deleted_ids, errors
+    return result, deleted_ids, errors, expired_ids
 
 
 def _find_participating_character(

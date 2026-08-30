@@ -323,7 +323,7 @@ class TestCollectAllFutureEvents:
 
         config = Config(tmp_path / "config.json")
         # no wow_path set
-        _, _, errors = _collect_all_future_events(config)
+        _, _, errors, _ = _collect_all_future_events(config)
         assert len(errors) == 1
 
     def test_errors_on_no_guild_key(self, tmp_path):
@@ -332,7 +332,7 @@ class TestCollectAllFutureEvents:
         config = Config(tmp_path / "config.json")
         config.set("wow_path", str(tmp_path))
         config.set("account_folder", "X")
-        _, _, errors = _collect_all_future_events(config)
+        _, _, errors, _ = _collect_all_future_events(config)
         assert len(errors) == 1
 
 
