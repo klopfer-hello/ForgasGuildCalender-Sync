@@ -196,13 +196,14 @@ def compute_event_hash(event: CalendarEvent) -> str:
         (p.name, p.group, p.slot) for p in event.participants if p.group > 0
     )
     # Header fields the roster image renders. Required because an in-game
-    # edit of the time, date, title or raid changes the image without
+    # edit of the time, date, title, raid or duration changes the image without
     # necessarily touching the roster — and the addon does not reliably bump
     # `revision` for every such edit, which would otherwise leave the thread
-    # showing the old time forever.
+    # showing the old time forever. `duration_minutes` is the effective value
+    # resolved by services.event_duration; it renders as the header's end time.
     header = (
         f"{event.date}|{event.server_hour:02d}:{event.server_minute:02d}"
-        f"|{event.title}|{event.raid}"
+        f"|{event.title}|{event.raid}|{event.duration_minutes or 0}"
     )
     payload = (
         f"{event.event_id}|{event.revision}|{confirmed}|{signed}"

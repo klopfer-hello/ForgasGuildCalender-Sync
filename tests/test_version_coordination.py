@@ -140,3 +140,53 @@ def test_dev_version_skips_everything(config, monkeypatch):
     discord.get_max_remote_version.assert_not_called()
     discord.delete_registry_messages.assert_not_called()
     discord.create_changelog_thread.assert_not_called()
+
+
+class TestDurationReleaseLockout:
+    """2.16.0 changed what the roster/weekly images show (per-event duration).
+
+    An older client rendering the same events would draw the old flat duration
+    and overwrite the newer client's Discord state, so it must defer. The only
+    cross-client signal is the `_v<version>` segment in image filenames, which
+    a 2.16.0 client publishes as soon as it posts any image.
+    """
+
+    def test_pre_duration_client_defers_to_2_16(self, config, monkeypatch):
+        monkeypatch.setattr(sync_engine, "__version__", "2.15.1")
+        discord = _discord(max_remote_version="2.16.0")
+
+        should_defer, errors = sync_engine.coordinate_client_versions(config, discord)
+
+        assert should_defer is True
+        assert errors == []
+
+    def test_2_16_client_does_not_defer_to_older_ones(self, config, monkeypatch):
+        monkeypatch.setattr(sync_engine, "__version__", "2.16.0")
+        discord = _discord(max_remote_version="2.15.1")
+
+        should_defer, _ = sync_engine.coordinate_client_versions(config, discord)
+
+        assert should_defer is False
+
+    def test_2_16_client_does_not_defer_to_its_own_images(self, config, monkeypatch):
+        monkeypatch.setattr(sync_engine, "__version__", "2.16.0")
+        discord = _discord(max_remote_version="2.16.0")
+
+        should_defer, _ = sync_engine.coordinate_client_versions(config, discord)
+
+        assert should_defer is False
+
+    def test_version_tag_is_readable_from_a_posted_filename(self, monkeypatch):
+        # The gate is only armed if the tag this client writes is the tag the
+        # scanner reads back — assert the round trip rather than the format.
+        from fgc_sync.services import discord_poster
+
+        monkeypatch.setattr(discord_poster, "__version__", "2.16.0")
+        filename = (
+            f"roster_fgc-1{discord_poster._version_filename_tag()}_h1a2b3c4d_t1789.png"
+        )
+
+        match = discord_poster._FILENAME_VERSION_PATTERN.search(filename)
+
+        assert match is not None
+        assert match.group(1) == "2.16.0"

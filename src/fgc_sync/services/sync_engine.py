@@ -21,6 +21,11 @@ from fgc_sync.services.discord_poster import (
     _short_raid_name,
     compute_event_hash,
 )
+from fgc_sync.services.event_duration import (
+    apply_effective_durations,
+    effective_duration_hours,
+    fallback_minutes_from_config,
+)
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.lua_parser import (
     extract_events,
@@ -54,7 +59,9 @@ _SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
 # Busy/Free transparency field). A mapping entry whose stored `feat` differs
 # forces a one-time re-PATCH so existing events pick up the new field.
 #   1 = status (tentative) + transparency (Busy/Free)
-_EVENT_FEATURE_VERSION = 1
+#   2 = per-event duration from the addon's `durationMinutes` (was a flat
+#       `default_duration_hours` for every event)
+_EVENT_FEATURE_VERSION = 2
 
 # Bulk-deletion guard for per-event Discord cleanup. The all-empty guard
 # (no_events_guard) only catches a *fully* empty parse; a divergent or partial
@@ -335,7 +342,6 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
 
     calendar_id = config.get("calendar_id")
     timezone = config.get("timezone", "Europe/Berlin")
-    duration = config.get("default_duration_hours", 3)
 
     if not calendar_id:
         result.errors.append("Calendar ID not configured")
@@ -363,6 +369,8 @@ def execute_sync(config: Config, gcal: GoogleCalendarClient) -> SyncResult:
 
     for event_id, (evt, char_name) in syncable.items():
         start_dt = _event_to_datetime(evt, timezone)
+        # Effective duration, already resolved onto the event by the collector.
+        duration = effective_duration_hours(evt)
         summary = evt.summary_line(char_name)
         description = evt.description_text()
         location = _short_raid_name(evt.raid) if evt.raid else ""
@@ -723,7 +731,6 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     _ds_start = _time.monotonic()
     result = SyncResult()
     timezone = config.get("timezone", "Europe/Berlin")
-    duration_hours = float(config.get("default_duration_hours", 3))
 
     if not discord.is_configured:
         return result
@@ -955,7 +962,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 channel_id,
                 evt,
                 timezone,
-                duration_hours,
+                effective_duration_hours(evt),
                 (existing or {}).get("ics"),
                 is_new_thread,
             )
@@ -1113,6 +1120,13 @@ def _load_events_for_overview(
         return {}, errors
 
     wow_events = extract_events(db, guild_key)
+    # Resolve each event's effective duration (addon value -> addon per-raid
+    # default -> configured fallback) so downstream consumers can read
+    # `duration_minutes` as a plain int.
+    apply_effective_durations(
+        wow_events,
+        fallback_minutes_from_config(config.get("default_duration_hours", 3)),
+    )
     deleted_ids = get_deleted_event_ids(db, guild_key)
     by_id = {e.event_id: e for e in wow_events if e.event_id not in deleted_ids}
     return by_id, errors
@@ -1436,6 +1450,13 @@ def _collect_syncable_events(
 
     char_names = list_character_names(db)
     wow_events = extract_events(db, guild_key)
+    # Resolve each event's effective duration (addon value -> addon per-raid
+    # default -> configured fallback) so downstream consumers can read
+    # `duration_minutes` as a plain int.
+    apply_effective_durations(
+        wow_events,
+        fallback_minutes_from_config(config.get("default_duration_hours", 3)),
+    )
     deleted_ids = get_deleted_event_ids(db, guild_key)
     today = date.today()
 
@@ -1485,6 +1506,13 @@ def _collect_all_future_events(
         return {}, set(), errors, expired_ids
 
     wow_events = extract_events(db, guild_key)
+    # Resolve each event's effective duration (addon value -> addon per-raid
+    # default -> configured fallback) so downstream consumers can read
+    # `duration_minutes` as a plain int.
+    apply_effective_durations(
+        wow_events,
+        fallback_minutes_from_config(config.get("default_duration_hours", 3)),
+    )
     # Derive cross-event availability on the full list, before windowing:
     # a conflicting confirmation may live outside the lookahead window.
     mark_unavailable_participants(wow_events)

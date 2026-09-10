@@ -274,9 +274,9 @@ def render_roster(event: CalendarEvent, timezone: str) -> bytes:
         dt = date_cls.fromisoformat(event.date)
         day_names = tl("roster.weekday_full")
         day_name = day_names[dt.weekday()] if len(day_names) == 7 else dt.strftime("%A")
-        date_str = f"{day_name}, {event.date}    {event.time_str}"
+        date_str = f"{day_name}, {event.date}    {event.time_range_str}"
     except ValueError:
-        date_str = f"{event.date}  {event.time_str}"
+        date_str = f"{event.date}  {event.time_range_str}"
 
     title_line = f"{date_str}    {event.title}"
     draw.text((PADDING, 10 * SCALE), title_line, fill=ACCENT_COLOR, font=font_title)

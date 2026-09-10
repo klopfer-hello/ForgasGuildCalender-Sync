@@ -21,7 +21,16 @@ from fgc_sync.services.roster_image import (
     _load_font,
 )
 
+#: Last-resort event length for the weekly grid, used only when an event
+#: reaches the renderer without a resolved ``duration_minutes`` (the sync-engine
+#: collectors always resolve one — see services.event_duration). Fractional
+#: values are supported; everything flowing to canvas geometry is coerced to int.
 WEEKLY_EVENT_DURATION_HOURS = 2.5
+
+
+def _duration_minutes(evt: CalendarEvent) -> int:
+    """Effective length of *evt* in whole minutes, for grid geometry."""
+    return int(evt.duration_minutes or WEEKLY_EVENT_DURATION_HOURS * 60)
 
 
 def get_weekly_thread_name() -> str:
@@ -55,8 +64,39 @@ _EVENT_BORDER = (120, 160, 220)
 # Full-raid palette (confirmed_count >= max roster size)
 _EVENT_FILL_FULL = (40, 100, 60)
 _EVENT_BORDER_FULL = (110, 200, 140)
+#: How far the solid event colour is faded toward the grid for the part of a
+#: card that extends past the raid's real end time. The card grows to fit its
+#: label; only the region up to the true end time keeps the full colour, so the
+#: colour boundary still reads as "the raid ends here".
+_EVENT_TAIL_BLEND = 0.62
+
 _GRID_FILL = (28, 28, 36)
 _GRID_STRIPE = (36, 36, 46)
+
+#: Pixel height of the six-line cell label (name, time, RL, confirmed, signed,
+#: open) plus its padding, at the widest 1-lane tier — the tallest the label
+#: ever gets, since narrower tiers shrink the fonts.
+_CELL_LABEL_HEIGHT = 5 * _SCALE + 18 * _SCALE + 5 * (16 * _SCALE) + 4 * _SCALE
+
+#: The same height expressed in grid minutes: a card is never drawn shorter
+#: than this, so the label always sits on its own backdrop instead of spilling
+#: onto the grid. Short raids (gruul 30, gruul_mag 60, the 2h raids) would
+#: otherwise overflow, which is what a duration-exact box costs once durations
+#: stop being uniform. Derived from constants only — no font metrics — so every
+#: client packs lanes identically.
+_MIN_CARD_MINUTES = -(-_CELL_LABEL_HEIGHT * 60 // _HOUR_HEIGHT)
+
+
+def _card_minutes(evt: CalendarEvent) -> int:
+    """Height of *evt*'s card in grid minutes — its duration, or the label."""
+    return max(_duration_minutes(evt), _MIN_CARD_MINUTES)
+
+
+def _blend(colour: tuple, toward: tuple, amount: float) -> tuple:
+    """Mix *colour* *amount* of the way toward *toward*."""
+    return tuple(
+        round(c + (t - c) * amount) for c, t in zip(colour, toward, strict=True)
+    )
 
 
 def format_weekly_summary(monday: date, num_events: int) -> str:
@@ -141,9 +181,20 @@ def _max_roster_size(raid: str) -> int:
     return max_roster_size(raid)
 
 
+#: Bumped whenever the *rendering* changes in a way that must reach already
+#: posted images even though the underlying event data is identical. The
+#: per-message skip compares this hash, so without a bump a purely visual fix
+#: never ships — the remote image stays stale forever. Same lever as
+#: `_EVENT_FEATURE_VERSION` for Google event bodies.
+#:   1 = uniform 2.5h cells
+#:   2 = per-event duration; cards grown to fit their label, real end shown by
+#:       the colour boundary (see _MIN_CARD_MINUTES / _EVENT_TAIL_BLEND)
+_WEEKLY_RENDER_VERSION = 2
+
+
 def compute_weekly_hash(events: list[CalendarEvent]) -> str:
     """Short hash over everything the image displays."""
-    payload_parts = []
+    payload_parts = [f"render={_WEEKLY_RENDER_VERSION}"]
     for evt in sorted(events, key=lambda e: (e.date, e.server_hour, e.server_minute)):
         payload_parts.append(
             "|".join(
@@ -156,6 +207,7 @@ def compute_weekly_hash(events: list[CalendarEvent]) -> str:
                     str(evt.confirmed_count),
                     str(evt.signed_count),
                     str(_max_roster_size(evt.raid)),
+                    str(_duration_minutes(evt)),
                 ]
             )
         )
@@ -173,9 +225,8 @@ def _determine_hour_range(events: list[CalendarEvent]) -> tuple[int, int]:
     if not events:
         return _DEFAULT_START_HOUR, _DEFAULT_END_HOUR
     start = min(evt.server_hour for evt in events)
-    duration_minutes = int(WEEKLY_EVENT_DURATION_HOURS * 60)
     latest_end_minutes = max(
-        evt.server_hour * 60 + evt.server_minute + duration_minutes for evt in events
+        evt.server_hour * 60 + evt.server_minute + _card_minutes(evt) for evt in events
     )
     # +1 so there's always a trailing labeled row past the latest event end,
     # anchoring the event's end time to a visible hour label.
@@ -193,10 +244,8 @@ def _time_label(hour: int, minute: int) -> str:
 
 
 def _end_time(evt: CalendarEvent) -> tuple[int, int]:
-    """Return (end_hour, end_minute) for an event of WEEKLY_EVENT_DURATION_HOURS."""
-    total_minutes = (
-        evt.server_hour * 60 + evt.server_minute + int(WEEKLY_EVENT_DURATION_HOURS * 60)
-    )
+    """Return (end_hour, end_minute) for *evt* using its effective duration."""
+    total_minutes = evt.server_hour * 60 + evt.server_minute + _duration_minutes(evt)
     return total_minutes // 60, total_minutes % 60
 
 
@@ -326,13 +375,12 @@ def render_weekly_overview(
         if 0 <= col <= 6:
             by_day.setdefault(col, []).append(evt)
 
-    duration_minutes = int(WEEKLY_EVENT_DURATION_HOURS * 60)
     for col, day_events in by_day.items():
         day_events.sort(key=lambda e: (e.server_hour, e.server_minute))
         lane_ends: list[int] = []
         for evt in day_events:
             start_m = evt.server_hour * 60 + evt.server_minute
-            end_m = start_m + duration_minutes
+            end_m = start_m + _card_minutes(evt)
             for i, lane_end in enumerate(lane_ends):
                 if lane_end <= start_m:
                     lane_ends[i] = end_m
@@ -360,15 +408,36 @@ def render_weekly_overview(
         col_left = grid_origin_x + _TIME_COL_WIDTH + col * _DAY_COL_WIDTH
         x0 = col_left + lane * lane_width + 3
         x1 = col_left + (lane + 1) * lane_width - 3
+        grid_bottom = body_top + hour_span * _HOUR_HEIGHT - 2
         y0 = body_top + int(start_minutes * _HOUR_HEIGHT / 60) + 2
-        y1 = body_top + int((start_minutes + duration_minutes) * _HOUR_HEIGHT / 60) - 2
-        y1 = min(y1, body_top + hour_span * _HOUR_HEIGHT - 2)
+        # The card is as tall as its label needs; the raid's real end sits
+        # somewhere inside it. Everything past that end is faded toward the
+        # grid, so the colour boundary still marks when the raid finishes
+        # while the text keeps a readable backdrop underneath it.
+        card_y1 = min(
+            body_top
+            + int((start_minutes + _card_minutes(evt)) * _HOUR_HEIGHT / 60)
+            - 2,
+            grid_bottom,
+        )
+        duration_y1 = min(
+            body_top
+            + int((start_minutes + _duration_minutes(evt)) * _HOUR_HEIGHT / 60)
+            - 2,
+            grid_bottom,
+        )
 
         max_spots = _max_roster_size(evt.raid)
         is_full = evt.confirmed_count >= max_spots
         cell_fill = _EVENT_FILL_FULL if is_full else _EVENT_FILL
         cell_border = _EVENT_BORDER_FULL if is_full else _EVENT_BORDER
-        draw.rectangle([(x0, y0), (x1, y1)], fill=cell_fill, outline=cell_border)
+        tail_fill = _blend(cell_fill, _GRID_FILL, _EVENT_TAIL_BLEND)
+
+        draw.rectangle([(x0, y0), (x1, card_y1)], fill=tail_fill, outline=cell_border)
+        if duration_y1 > y0:
+            draw.rectangle(
+                [(x0, y0), (x1, duration_y1)], fill=cell_fill, outline=cell_border
+            )
 
         # Pick cell fonts that fit the lane width. 1 lane = full column,
         # 2 lanes ≈ half, 3+ lanes ≈ third — shrink + abbreviate proportionally.
