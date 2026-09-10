@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent, Participant
+from fgc_sync.services.event_duration import normalize_duration_minutes
 
 
 def extract_events(
@@ -49,6 +50,9 @@ def extract_events(
                     creator=evt.get("creator", ""),
                     revision=evt.get("revision", 0),
                     participants=participants,
+                    duration_minutes=normalize_duration_minutes(
+                        evt.get("durationMinutes")
+                    ),
                 )
             )
 

@@ -1442,3 +1442,107 @@ class TestV5NamespaceResolution:
     def test_v4_layout_falls_back_to_prefix_when_empty(self):
         db = _build_v4_db({})
         assert _detect_layout(db, "V4|Realm-V4Guild", "Default") == "v4"
+
+
+class TestDurationMinutesParsing:
+    """The V5 addon writes an optional `durationMinutes` on events.
+
+    It is a named key in every storage layout — the packed record has no
+    positional slot for it (EVENT_FIELD_INDEX stops at 13), so it can only
+    ever arrive as a raw named key.
+    """
+
+    @staticmethod
+    def _db(namespace: str, event: dict) -> dict:
+        return {
+            "profiles": {
+                "Default": {
+                    "guildScoped": {
+                        f"{namespace}Thunderstrike-TestGuild": {
+                            "events": {"2026-09-14": {1: event}}
+                        }
+                    }
+                }
+            }
+        }
+
+    @staticmethod
+    def _named_event(**extra) -> dict:
+        evt = {
+            "eventId": "evt-dur",
+            "title": "Kara",
+            "type": "raid",
+            "raid": "karazhan",
+            "serverTimeMinutes": 1200,
+            "comment": "",
+            "creator": "Forga",
+            "revision": 1,
+            "participants": {},
+            "roster": {"byPlayer": {}},
+        }
+        evt.update(extra)
+        return evt
+
+    @pytest.mark.parametrize("namespace", ["", "V3|", "V5|"])
+    def test_named_keys_events_carry_the_duration(self, namespace):
+        db = self._db(namespace, self._named_event(durationMinutes=150))
+        (event,) = extract_events(db, f"{namespace}Thunderstrike-TestGuild")
+        assert event.duration_minutes == 150
+
+    @pytest.mark.parametrize("namespace", ["", "V3|", "V5|"])
+    def test_absent_duration_parses_as_none(self, namespace):
+        db = self._db(namespace, self._named_event())
+        (event,) = extract_events(db, f"{namespace}Thunderstrike-TestGuild")
+        assert event.duration_minutes is None
+
+    def test_explicit_zero_is_kept_distinct_from_absent(self):
+        db = self._db("V5|", self._named_event(durationMinutes=0))
+        (event,) = extract_events(db, "V5|Thunderstrike-TestGuild")
+        assert event.duration_minutes == 0
+
+    def test_out_of_range_duration_is_dropped(self):
+        db = self._db("V5|", self._named_event(durationMinutes=9999))
+        (event,) = extract_events(db, "V5|Thunderstrike-TestGuild")
+        assert event.duration_minutes is None
+
+    def test_packed_event_reads_the_named_key_alongside_its_slots(self):
+        packed = {
+            1: "evt-packed",
+            2: "raid",
+            3: "karazhan",
+            4: "Kara",
+            5: "",
+            6: "Forga",
+            7: 1200,
+            8: 1,
+            9: 0,
+            10: "Forga",
+            11: {},
+            12: {},
+            13: {},
+            "durationMinutes": 150,
+        }
+        db = self._db("V5|", packed)
+        (event,) = extract_events(db, "V5|Thunderstrike-TestGuild")
+        assert event.event_id == "evt-packed"
+        assert event.duration_minutes == 150
+
+    def test_packed_event_without_the_key_parses_as_none(self):
+        packed = {
+            1: "evt-packed",
+            2: "raid",
+            3: "karazhan",
+            4: "Kara",
+            5: "",
+            6: "Forga",
+            7: 1200,
+            8: 1,
+            9: 0,
+            10: "Forga",
+            11: {},
+            12: {},
+            13: {},
+        }
+        db = self._db("V5|", packed)
+        (event,) = extract_events(db, "V5|Thunderstrike-TestGuild")
+        assert event.duration_minutes is None

@@ -28,6 +28,12 @@ In practice a V4 events bucket can hold a *mix* of shapes:
   V3 — these look identical to the v3 layout (named-keys dict with the roster
   externalized into ``event["roster"]["byPlayer"]``)
 
+Since the V5 bump the addon also writes an optional ``durationMinutes`` on
+events. It has **no positional slot** — ``EVENT_FIELD_INDEX`` stops at 13 — so
+it only ever appears as a named key, on named-keys records and (via the record
+metatable's raw-key fallthrough) occasionally on packed ones. Both decoders
+read it; see :mod:`fgc_sync.services.event_duration` for what the value means.
+
 Per-event shape sniffing inside :func:`extract_events` routes each record to
 the right decoder, so a mixed bucket parses correctly. The packed shape
 extends v2 — the field indices match on every slot v2 read, so a v4-packed
@@ -40,6 +46,7 @@ from __future__ import annotations
 
 from fgc_sync.models.enums import Attendance
 from fgc_sync.models.events import CalendarEvent, Participant
+from fgc_sync.services.event_duration import normalize_duration_minutes
 
 # Event positional slots (1-based, mirrors EVENT_FIELD_INDEX in the addon).
 _E_EVENT_ID = 1
@@ -136,7 +143,24 @@ def _parse_packed_event(evt, date_key: str) -> CalendarEvent | None:
         creator=_lua_get(evt, _E_CREATOR, "") or "",
         revision=int(_lua_get(evt, _E_REVISION, 0) or 0),
         participants=participants,
+        duration_minutes=_packed_duration(evt),
     )
+
+
+def _packed_duration(evt) -> int | None:
+    """Duration of a packed record, which has no positional slot for it.
+
+    ``EVENT_FIELD_INDEX`` in ``Core-PackedStorage.lua`` stops at slot 13 and has
+    no ``durationMinutes`` entry, so ``PackEventRecord`` drops the value when it
+    builds the array. The record metatable's ``__newindex`` does fall through to
+    a plain ``rawset`` for unknown keys, though, so a packed record written
+    after a duration edit can still carry one as a named key alongside its
+    slots. Read it when present; ``None`` simply falls through to the addon's
+    per-raid default downstream.
+    """
+    if not isinstance(evt, dict):
+        return None
+    return normalize_duration_minutes(evt.get("durationMinutes"))
 
 
 def _parse_packed_participants(raw, roster_by_player) -> list[Participant]:
@@ -223,6 +247,7 @@ def _parse_named_event(evt: dict, date_key: str) -> CalendarEvent:
         creator=evt.get("creator", ""),
         revision=evt.get("revision", 0),
         participants=participants,
+        duration_minutes=normalize_duration_minutes(evt.get("durationMinutes")),
     )
 
 

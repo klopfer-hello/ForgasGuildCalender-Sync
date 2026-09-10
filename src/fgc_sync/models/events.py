@@ -35,6 +35,12 @@ class CalendarEvent:
     creator: str
     revision: int
     participants: list[Participant] = field(default_factory=list)
+    # Event length in minutes. Parsers store the addon's raw ``durationMinutes``
+    # (an int in [0, 405], where 0 means "explicitly undefined", or None when
+    # the addon never wrote the key). The sync-engine collectors then resolve it
+    # to a concrete effective duration via services.event_duration, so every
+    # consumer downstream can read it as a plain int.
+    duration_minutes: int | None = None
 
     @property
     def type_label(self) -> str:
@@ -54,6 +60,21 @@ class CalendarEvent:
     @property
     def time_str(self) -> str:
         return f"{self.server_hour:02d}:{self.server_minute:02d}"
+
+    @property
+    def end_time_str(self) -> str:
+        """End time as ``HH:MM``, wrapping past midnight. ``""`` if unresolved."""
+        if not self.duration_minutes:
+            return ""
+        total = self.server_hour * 60 + self.server_minute + self.duration_minutes
+        total %= 24 * 60
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    @property
+    def time_range_str(self) -> str:
+        """``HH:MM-HH:MM`` (en dash), or just the start time if no duration."""
+        end = self.end_time_str
+        return f"{self.time_str}–{end}" if end else self.time_str
 
     def summary_line(self, character_name: str = "") -> str:
         base = f"[{self.type_label}] {self.title}"

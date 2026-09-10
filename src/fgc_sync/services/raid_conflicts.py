@@ -57,8 +57,18 @@ WEEKLY_RESET_WEEKDAY = 2
 _CYCLE_ANCHOR = date(2026, 1, 7)
 
 
+def canonical_raid_key(raid: str) -> str:
+    """Normalize a stored raid value to the addon's canonical key.
+
+    Older events use long-form values (``tempest_keep``, ``black_temple``, …);
+    the addon writes short keys (``tk``, ``bt``). Both must resolve to the same
+    key so lockouts and per-raid defaults agree regardless of spelling.
+    """
+    return _CANONICAL_RAID_KEYS.get(raid, raid)
+
+
 def _component_raid_keys(raid: str) -> tuple[str, ...]:
-    raid_key = _CANONICAL_RAID_KEYS.get(raid, raid)
+    raid_key = canonical_raid_key(raid)
     return COMPONENT_RAID_KEYS.get(raid_key, (raid_key,))
 
 
