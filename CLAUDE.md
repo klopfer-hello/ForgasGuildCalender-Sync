@@ -24,10 +24,11 @@ System tray companion for the **Forga's Guild Calendar** WoW addon. Reads raid/e
   - **v2** (FGC2) — packed positional arrays with `group`/`slot` merged from a separate `rosterByPlayer` table at `event[13]`
   - **v3** — named-keys events with the roster externalized into `event["roster"]["byPlayer"]` (named keys, not positional); companion `V3|` prefix on `profiles[].guildScoped` keys
   - **v4** — packed-positional shape with `firstSignupAt` (participant slot 7) and a separate `reserves` table (event slot 12). The `V4|` namespace was rolled out and then **discarded** by the addon: `Core-PackedStorage.lua` exposes `GetDiscardedGuildScopedStorageKey() → "V4"` and `CleanupDiscardedGuildScopedStorage` deletes it when `GUILD_SCOPED_STORAGE_LEGACY_CLEANUP_ENABLED` is true (currently `false`). The on-disk shape lives on in v5.
-  - **v5** — current addon namespace (`V5|<realm>-<guild>`, `FGC.GUILD_SCOPED_STORAGE_NAMESPACE = "V5"` in the addon's `Core.lua`). Same on-disk shape as v4: `PackEventRecord` writes packed positional arrays (event slots: `1=eventId, 2=type, 3=raid, 4=title, 5=comment, 6=creator, 7=serverTimeMinutes, 8=revision, 9=updatedAt, 10=updatedBy, 11=participants, 12=reserves, 13=roster`; participant slot 7 is `firstSignupAt`; roster slots 3-5 carry sync-conflict metadata). In practice a v5 bucket holds a mix of packed and **named-keys events** (pre-pack form) because packing only fires when a record passes through the mutation path. `lua_parser_v4` sniffs each event individually and handles both v4 and v5 buckets.
+  - **v5** — current addon namespace (`V5|<realm>-<guild>`, `FGC.GUILD_SCOPED_STORAGE_NAMESPACE = "V5"` in the addon's `Core.lua`). Same on-disk shape as v4: `PackEventRecord` writes packed positional arrays (event slots: `1=eventId, 2=type, 3=raid, 4=title, 5=comment, 6=creator, 7=serverTimeMinutes, 8=revision, 9=updatedAt, 10=updatedBy, 11=participants, 12=reserves, 13=roster`; participant slot 7 is `firstSignupAt`; roster slots 3-5 carry sync-conflict metadata). In practice a v5 bucket holds a mix of packed and **named-keys events** (pre-pack form) because packing only fires when a record passes through the mutation path. `lua_parser_v4` sniffs each event individually and handles both v4 and v5 buckets. V5 also added an optional **`durationMinutes`** on events; it has **no packed slot** (`EVENT_FIELD_INDEX` stops at 13), so it only ever appears as a named key — on named-keys records, and on packed ones via the record metatable's raw-key fallthrough. `PackEventRecord`/`BuildPersistedEventRecord` would drop it when building a fresh 13-slot array, but both are currently dormant (the addon's live storage is canonical named-keys and `PrepareLegacyEventForCurrentStorage` unpacks rather than packs).
 - **Namespace resolution**: `lua_parser._resolve_guild_key` strips any known namespace prefix from the configured `guild_key` and probes `V5|<base>` first, then `V3|<base>`, then the bare key — returning the first candidate with a non-empty `events` table. This mirrors the addon's own bootstrap preference (current → previous → legacy), which deliberately skips V4. A stale `V3|…` config keeps working after the addon's V3→V5 bump, and rollback (empty/missing V5) routes reads back to V3 without code changes. **V3 is retained indefinitely as the rollback safety copy** — never auto-cleaned. Stranded `V4|` buckets remain readable if the user explicitly points at one, but are not part of the probe order.
 - The `lua_parser` façade dispatches to `lua_parser_v1` / `lua_parser_v2` / `lua_parser_v3` / `lua_parser_v4`. `V5|` and `V4|` both short-circuit to `lua_parser_v4` (same on-disk shape); other namespaces use per-event shape sniffing. `list_guild_keys` deduplicates `V3|<base>` / `V5|<base>` pairs, preferring V5.
 - Time: always use `serverTimeMinutes` (minutes from midnight), not `serverHour`/`serverMinute`
+- Duration: `durationMinutes` on the event — see **Event Duration** below. Never assume a flat length
 - Timezone: EU Thunderstrike = `Europe/Berlin`
 - Characters: auto-detected from `FGC_DB.profileKeys` (format `"Name - Realm"`)
 
@@ -154,6 +155,7 @@ Read the function for the actual flow. Invariants that have to hold:
 - Only events where the user's character is **Signed** or **Confirmed** are synced
 - **Adopt before create**: every event missing from the local mapping is searched in Google by title+date before a new event is created (recovers from lost mapping)
 - **Verify before trust**: even when revision matches, the Google event is checked for existence — externally deleted events are re-created
+- **Feature-version back-fill** (`_EVENT_FEATURE_VERSION`, currently `2`): a mapping entry whose stored `feat` differs forces a one-time re-PATCH, so already-synced events pick up a newly added body field even when their revision is unchanged. Bump it whenever the event body gains such a field (`1` = tentative status + transparency, `2` = per-event duration)
 - **Mass-deletion guard**: if WoW yields zero events but the mapping is non-empty, treat it as a parser failure and skip cleanup entirely
 - Events absent from WoW *or* listed in `deletedEvents` are deleted from Google
 
@@ -161,7 +163,7 @@ Read the function for the actual flow. Invariants that have to hold:
 
 - **Summary**: `[Type] Title (CharacterName)` e.g. `[Raid] Gruul mit Forga (Klopfbernd)`
 - **Start**: date + serverTimeMinutes in configured timezone
-- **Duration**: configurable, default 3 hours
+- **Duration**: per event, resolved by `services/event_duration.py` (see **Event Duration**)
 - **Description**: event comment + participant counts + roster breakdown
 - **Location**: short raid name (`_short_raid_name`, e.g. `TK`, `SSC+TK`)
 
@@ -180,7 +182,7 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 - **Unping the difference too**: members in `pinged` who are no longer confirmed have their `<@id>` mention edited out of the original ping message via `remove_mentions` (replaced with `~~@<name>~~`, `allowed_mentions: {parse: []}`). Discord does not re-notify on edits, so the other members in the same message are not re-pinged. Names with an empty message id (legacy v1 entries pre-migration) are dropped from `pinged` without an edit
 - Re-adding a previously-removed member triggers a fresh "Newly confirmed" ping — they were dropped from `pinged` on removal, so the diff sees them as new
 - **Self-heal on 404**: a mapped thread that was deleted externally (another client's cleanup, manual delete) is detected via `ensure_unarchived` returning `False` (404 only; 403 returns `True` to avoid duplicating an inaccessible thread); the mapping entry is forgotten so the adopt-with-duplicate-collapse path above re-adopts a surviving thread or recreates one — clients never have to hand-clear `discord_message_mapping`. Mirrors Google's "verify before trust"
-- **Calendar attachment** (`_sync_event_ics`): each thread carries an "Add to my calendar" `.ics` file as its own message beneath the roster image, so members can one-tap import the raid. Rendered by `services/ics.py` (`render_ics` → single-VEVENT VCALENDAR, UTC times so no VTIMEZONE; start/duration from `serverTimeMinutes` + `default_duration_hours`). Mirrors the image lifecycle: adopt the existing `.ics` (scan via `find_ics_message`) before posting a duplicate, PATCH in place (`update_ics`) when `compute_ics_hash` changes, skip when current. The message text is the translated `discord.calendar_attachment`. Best-effort — a failure never aborts the event sync. Mapping entry: `discord_message_mapping[event_id]["ics"] = {ics_id, hash}`. The filename `<Raid>_<date>_h<hash>.ics` embeds the dedup hash so the thread scan detects staleness without downloading
+- **Calendar attachment** (`_sync_event_ics`): each thread carries an "Add to my calendar" `.ics` file as its own message beneath the roster image, so members can one-tap import the raid. Rendered by `services/ics.py` (`render_ics` → single-VEVENT VCALENDAR, UTC times so no VTIMEZONE; start from `serverTimeMinutes`, length from the event's resolved `duration_minutes`). Mirrors the image lifecycle: adopt the existing `.ics` (scan via `find_ics_message`) before posting a duplicate, PATCH in place (`update_ics`) when `compute_ics_hash` changes, skip when current. The message text is the translated `discord.calendar_attachment`. Best-effort — a failure never aborts the event sync. Mapping entry: `discord_message_mapping[event_id]["ics"] = {ics_id, hash}`. The filename `<Raid>_<date>_h<hash>.ics` embeds the dedup hash so the thread scan detects staleness without downloading
 - Cleanup deletes threads for removed events and events older than `EXPIRED_EVENT_HOURS` (24h); 404 on already-deleted threads is silently ignored
 - **Bulk-deletion guard** (`_BULK_DELETION_GUARD_MIN=3`, `_BULK_DELETION_GUARD_FRACTION=0.5`): the all-empty `no_events_guard` only catches a *fully* empty parse. A divergent/partial read (another client on a different namespace, or whose SavedVariables lacks this guild's events) yields a non-empty-but-wrong set that marks many live events "removed". So if a single sync would delete `>= MIN` threads *and* `> FRACTION` of the mapping, the "not in events / deleted" removals are skipped entirely (only the expired cleanup runs) and the mapping is preserved. `compute_discord_sync_plan` mirrors this so the dry-run doesn't show removals the real sync would refuse. **Expired entries never count toward the guard**: `_collect_all_future_events` returns a fourth value, `expired_ids` — events that *were* parsed but fell out of the `[yesterday, +7d]` window because they're in the past. A mapping entry in `expired_ids` is ordinary expiry (thread deleted, 404 tolerated, entry dropped) and bypasses the guard. Without this, a client that sat out for days (stale-data guard / version gate) accumulated expired entries until they exceeded the guard threshold, and its cleanup then stalled on every cycle (2.15.0 incident: 11 of 21)
 
@@ -202,6 +204,26 @@ Runs after Google Calendar sync. Posts events within `DISCORD_LOOKAHEAD_DAYS` (7
 - **Sections**: Signed, Bench (no Declined)
 - **Unavailable greying**: signed players who are confirmed in *another* raid sharing the same lockout (different raid lead) render with a grey name (`UNAVAILABLE_COLOR`) and sort to the end of the Signed section — mirrors the greyed entries in the addon's "Available Players" list
 - **Footer**: role counts (Tanks/Healers/DDs) and class counts with icons
+
+### Event Duration (`services/event_duration.py`)
+
+Since the V5 storage bump the addon writes an optional `durationMinutes` per event. Two semantics are easy to get wrong and are mirrored exactly:
+
+- The addon normalizes it to an **integer in `[0, 405]`** (`NormalizeEventDurationMinutes`); anything else — missing, fractional, negative, NaN, out of range — is *no value*
+- A stored **`0` does not mean zero minutes**. It is *explicitly undefined* and falls through, exactly like an absent key. The addon writes the field lazily, so most events have no key at all
+
+`resolve_duration_minutes(event, fallback_minutes)` implements the three-step chain:
+
+1. a stored, non-zero `durationMinutes` — the raid lead's explicit choice
+2. `ADDON_DEFAULT_DURATION_MINUTES[raid]` for `type == "raid"` with a known raid key — mirrors the addon's `defaultsByRaid` (`karazhan` 120, `gruul`/`magtheridon` 30, `gruul_mag` 60, `ssc`/`tk`/`hyjal` 120, `ssc_tk` 210, `bt`/`za`/`swp` 180, `hyjal_bt` 240). Legacy long-form raid values normalize via `raid_conflicts.canonical_raid_key`
+3. `default_duration_hours` from config — replaces the addon's own blanket 180 so unknown raids (`aq40`, `naxx`, `zg`) and non-raid events (meetings) follow the tool's setting
+
+Invariants:
+
+- `apply_effective_durations(events, fallback_minutes)` is called by **all three** sync-engine collectors (`_collect_syncable_events`, `_collect_all_future_events`, `_load_events_for_overview`) right after `extract_events`, the same pattern as `mark_unavailable_participants`. It overwrites the raw value with the resolved one, so **every consumer downstream may read `event.duration_minutes` as a plain int** and none of them needs the fallback chain
+- The flag is derived state — never persisted, recomputed every cycle, and **idempotent** (a resolved value re-resolves to itself)
+- Steps 1–2 depend only on SavedVariables, so clients agree on them. Only step 3 reads local config — the sole cross-client divergence risk, hence the config-table note
+- Consumers: Google `end` time, `.ics` `DTEND` (+ `compute_ics_hash`), the roster-card header (`CalendarEvent.time_range_str`, wraps past midnight), the weekly grid's cell height / time-range label / hour range / lane overlaps, `compute_event_hash` and `compute_weekly_hash`
 
 ### Cross-Event Availability (`services/raid_conflicts.py`)
 
@@ -275,8 +297,10 @@ Maintains a **single permanent** forum thread (`get_weekly_thread_name()` — `W
 - **Grid**: 7 day columns (Mo–So) × hourly rows. Hour range is **dynamic** — `_determine_hour_range` picks `min(earliest_event, 17)` down to `max(latest_event_end, start+4)+1` (trailing labeled row for end clarity), capped at 03:00 next day
 - **Event cell**: short name, time range (`20:00–22:30`), `RL: <leader>`, `Bestätigt: X` (just confirmed), `Angemeldet: Y` (just signed — **not** confirmed+signed), `Offen: Z` (= `max(0, max_roster - confirmed)`)
 - **Full-raid highlight**: when `confirmed_count >= max_roster_size(raid)` the cell renders green (`_EVENT_FILL_FULL` / `_EVENT_BORDER_FULL`) instead of the default blue. Roster sizes come from `discord_poster.RAID_MAX_SIZE` (Kara/ZA = 10, all other TBC 25-mans = 25 including the `ssc_tk`/`gruul_mag` double raids, classic `aq40`/`naxx` = 40, default `RAID_MAX_SIZE_DEFAULT = 25` for unknown raids); `max_roster_size(raid)` is the public lookup
+- **Card height vs. duration** (`_MIN_CARD_MINUTES`, `_EVENT_TAIL_BLEND`): a duration-exact box is too short for the six-line label on any raid under ~2.5h — i.e. most of them once durations stopped being uniform. So a card is drawn at `max(duration, _MIN_CARD_MINUTES)` and the raid's real end is shown by **colour** instead of by height: solid event fill up to the true end, then the same fill blended toward the grid for the remainder. Long raids (≥ the floor) render exactly as before, with no tail. `_MIN_CARD_MINUTES` is derived from the 1-lane label metrics (the tallest tier) using constants only — no font metrics — so every client packs lanes identically
+- **Lane packing and the hour range both use the card height**, not the duration (`_card_minutes`). Otherwise two *sequential* short raids share a lane and their cards overlap, and a late raid's label is clipped off the bottom of the image. Consequence: back-to-back short raids render side by side rather than stacked
 - **Parallel raids**: greedy lane assignment per day column — overlapping raids sit side-by-side in equal-width lanes. Fonts shrink and labels abbreviate (`Best.`/`Angem.`/`Open`) for 3+ lanes
-- Duration constant: `WEEKLY_EVENT_DURATION_HOURS` (fractional supported)
+- Duration: per event, from `duration_minutes` — cell height, the `20:00–22:30` label, the dynamic hour range and lane-overlap detection all derive from it. `WEEKLY_EVENT_DURATION_HOURS` (2.5) survives only as the last-resort fallback for an event that reaches the renderer unresolved (fractional supported)
 
 ### Week selection (`weekly_overview.py`)
 
@@ -372,7 +396,7 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 | `guild_key` | Guild scope key (e.g. `Thunderstrike-Sauercrowd Community`) |
 | `calendar_id` | Google Calendar ID |
 | `timezone` | IANA timezone (default: `Europe/Berlin`) |
-| `default_duration_hours` | Event duration (default: 3) |
+| `default_duration_hours` | Last-resort event duration (default: 3) — used only when the addon has no value *and* no per-raid default (unknown raid, non-raid event). Keep it aligned across clients: it is the one duration input that is not derived from SavedVariables, so differing values make content hashes diverge |
 | `log_level` | Logging verbosity (default: `ERROR`) |
 | `event_mapping` | `{fgc_eventId: {google_id, revision, title}}` |
 | `discord_bot_token` | Discord bot token (optional) |
@@ -498,7 +522,7 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
 - Before posting a new image, always try `find_image_message` to locate the original
 - Deleting an already-deleted thread (404) must be handled silently
-- `compute_event_hash` must cover **every field the roster image displays** — including the header (date, `serverTimeMinutes`, title, raid), not just the roster. `revision` alone is not a reliable change signal: the addon does not bump it for every in-game edit
+- `compute_event_hash` must cover **every field the roster image displays** — including the header (date, `serverTimeMinutes`, title, raid, `duration_minutes`), not just the roster. `revision` alone is not a reliable change signal: the addon does not bump it for every in-game edit
 - Never rename a thread whose current name is a valid `_candidate_thread_names` variant — that's another language's client, not a stale name
 
 ### Weekly Overview
@@ -511,7 +535,9 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - Both `execute_weekly_sync` and `compute_weekly_sync_plan` must respect the stale-data guard (`_is_local_data_stale`)
 - `compute_weekly_hash` must cover every field the image displays, including `max_roster_size(raid)` (so the full-raid green highlight invalidates correctly when a raid name is renamed to a different-sized raid). Translated labels are *not* part of the hash — image content depends on language but adopting the existing thread + PATCHing avoids churn
 - Compute hashes **per week** (current vs. next get their own hash) and skip per-message — a content change in next week should never PATCH the starter and vice versa
-- `render_weekly_overview` must handle fractional `WEEKLY_EVENT_DURATION_HOURS` (e.g. 2.5) — coerce to int where values flow to canvas dimensions
+- Never draw cell text outside its card — the card is sized by `_card_minutes`, so grow the card rather than clipping or shrinking the label. Any new cell line must be reflected in `_CELL_LABEL_HEIGHT`, or short raids start overflowing again
+- `render_weekly_overview` must handle fractional durations (e.g. `WEEKLY_EVENT_DURATION_HOURS` 2.5) — coerce to int where values flow to canvas dimensions
+- `compute_weekly_hash` must include each event's `duration_minutes` — it sets the cell height and the time-range label
 - Lane assignment uses event start/end in minutes; parallel raids in the same day column must never overlap visually
 - "Signed" and "Open" in event cells mean **just signed** (`evt.signed_count`) and **`max(0, max_roster - confirmed)`** respectively — don't sum confirmed+signed under any label
 
