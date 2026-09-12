@@ -36,6 +36,7 @@ jobs:
             --icon "resources/app.ico" ^
             --add-data "resources;resources" ^
             --add-data "pyproject.toml;." ^
+            --collect-data "fgc_sync" ^
             --hidden-import "PIL" ^
             --hidden-import "fgc_sync.services.discord_poster" ^
             --hidden-import "fgc_sync.services.roster_image" ^
@@ -80,6 +81,7 @@ jobs:
             --icon "resources/app.icns" \
             --add-data "resources:resources" \
             --add-data "pyproject.toml:." \
+            --collect-data "fgc_sync" \
             --hidden-import "PIL" \
             --hidden-import "fgc_sync.services.discord_poster" \
             --hidden-import "fgc_sync.services.roster_image" \
