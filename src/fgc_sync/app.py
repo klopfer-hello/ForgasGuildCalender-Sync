@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import traceback
+from pathlib import Path
 
 from fgc_sync.services.config import Config
 
@@ -19,6 +20,18 @@ def _crash_log(msg: str):
             f.write(msg + "\n")
     except Exception:
         pass
+
+
+def _app_icon_path() -> Path:
+    """Locate ``app.ico``, both in a source tree and in a PyInstaller bundle.
+
+    The frozen build ships ``resources/`` at the root of ``sys._MEIPASS``; the
+    source tree keeps it two levels above the package.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "resources" / "app.ico"
+    return Path(__file__).resolve().parents[2] / "resources" / "app.ico"
 
 
 def main():
@@ -40,8 +53,6 @@ def _main():
         help="Use a custom config directory (for testing or multi-user setups)",
     )
     args, _ = parser.parse_known_args()
-
-    from pathlib import Path
 
     if args.config_dir:
         config_dir = Path(args.config_dir)
@@ -79,7 +90,7 @@ def _main():
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("FGC Sync")
 
-    icon_path = Path(__file__).resolve().parent.parent.parent / "resources" / "app.ico"
+    icon_path = _app_icon_path()
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
