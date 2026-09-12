@@ -424,6 +424,14 @@ Stored at `%APPDATA%/ForgasGuildCalendar-Sync/config.json` (Windows) or `~/.conf
 
 ## Development
 
+### Packaging (PyInstaller)
+
+Non-`.py` files inside `src/fgc_sync/` (the `i18n/*.json` translations, `resources/class_icons/*.png`) are **not** picked up by PyInstaller just because they are declared in `[tool.setuptools.package-data]` — that only covers pip installs. Both release jobs pass `--collect-data "fgc_sync"`, which walks the installed package and copies every data file to its package-relative path inside the bundle, so `importlib.resources.files("fgc_sync.i18n")` resolves the same frozen as from source.
+
+Symptoms when this is missing: `available_languages()` is empty, every `t()` returns its own key (thread names read `… discord.thread_with_word …`, the setup wizard shows dotted key names), and roster cards render without class icons. Adding a new data directory under the package needs no workflow change; adding one *outside* it does.
+
+Paths relative to the repo root (`resources/app.ico`) land at the root of `sys._MEIPASS` in a frozen build — resolve them via `sys._MEIPASS` (see `app._app_icon_path`), never by walking up from `__file__`.
+
 ### Versioning
 
 Semantic Versioning (`MAJOR.MINOR.PATCH`). Version lives in `pyproject.toml`. Releases are git tags (`git tag vX.Y.Z`).
