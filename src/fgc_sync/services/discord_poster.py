@@ -233,9 +233,25 @@ def _slugify(text: str, max_len: int = 90) -> str:
 
 _HTTP_TIMEOUT = 30  # seconds for all Discord API calls
 _MAX_RETRIES = 3
+_SERVER_ERROR_BACKOFF_SECONDS = 1.0  # multiplied by the attempt number
+_DEFAULT_RETRY_AFTER_SECONDS = 1.0
 _MEMBERS_PER_PAGE = 1000
 _MESSAGE_SCAN_LIMIT = 5
 _PING_HISTORY_SCAN_LIMIT = 100
+
+
+def _parse_retry_after(resp: requests.Response) -> float:
+    """Read ``retry_after`` off a 429 response, falling back to a short wait.
+
+    Discord's own 429s carry a JSON body, but an edge rate limit in front of
+    it answers with HTML — parsing that as JSON would raise straight past the
+    retry the caller is trying to perform.
+    """
+    try:
+        value = resp.json().get("retry_after", _DEFAULT_RETRY_AFTER_SECONDS)
+        return float(value)
+    except (ValueError, AttributeError, TypeError):
+        return _DEFAULT_RETRY_AFTER_SECONDS
 
 
 class DiscordPoster:
@@ -1270,19 +1286,35 @@ class DiscordPoster:
     # -- HTTP helpers --
 
     def _retry_request(self, method: str, url: str, **kwargs) -> requests.Response:
-        """Execute an HTTP request with rate-limit retry."""
+        """Execute an HTTP request, retrying rate limits and transient 5xx.
+
+        Discord answers a burst of requests with 503 as readily as with 429,
+        and those clear within a second or two, so they get the same treatment
+        instead of failing the caller on the first response. Neither case
+        sleeps after the final attempt — the response is about to be raised.
+        """
         resp = None
-        for _attempt in range(_MAX_RETRIES):
+        for attempt in range(_MAX_RETRIES):
             resp = self._session.request(
                 method,
                 url,
                 timeout=_HTTP_TIMEOUT,
                 **kwargs,
             )
-            if resp.status_code == 429:
-                retry_after = resp.json().get("retry_after", 1.0)
+            final_attempt = attempt == _MAX_RETRIES - 1
+            if resp.status_code == 429 and not final_attempt:
+                retry_after = _parse_retry_after(resp)
                 log.warning("Discord rate limited, retrying after %.1fs", retry_after)
                 time.sleep(retry_after)
+                continue
+            if resp.status_code >= 500 and not final_attempt:
+                backoff = _SERVER_ERROR_BACKOFF_SECONDS * (attempt + 1)
+                log.warning(
+                    "Discord server error %d, retrying after %.1fs",
+                    resp.status_code,
+                    backoff,
+                )
+                time.sleep(backoff)
                 continue
             resp.raise_for_status()
             return resp
