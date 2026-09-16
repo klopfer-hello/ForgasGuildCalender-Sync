@@ -1,4 +1,6 @@
-"""Unit tests for the 429/5xx retry loop in the Discord client."""
+"""Unit tests for the transient-failure handling in the Discord client:
+the 429/5xx retry loop and the per-cycle caching of a failed forum-thread
+listing."""
 
 from __future__ import annotations
 
@@ -86,3 +88,63 @@ class TestRetryRequest:
         ):
             p._retry_request("GET", "http://x")
         assert sleep.call_count == _MAX_RETRIES - 1
+
+
+class TestForumThreadFailureCache:
+    def test_failure_is_reraised_without_another_request(self):
+        p = _poster()
+        p._request = MagicMock(side_effect=requests.HTTPError("429 Too Many Requests"))
+
+        with pytest.raises(requests.HTTPError):
+            p._get_forum_threads()
+        assert p._request.call_count == 1
+
+        # Every further consumer in the same cycle gets the same failure,
+        # and no new request is issued into the exhausted bucket.
+        for _ in range(3):
+            with pytest.raises(requests.HTTPError):
+                p._get_forum_threads()
+        assert p._request.call_count == 1
+
+    def test_failure_never_degrades_into_an_empty_listing(self):
+        """An empty list would read as "nothing to adopt" and duplicate threads."""
+        p = _poster()
+        p._request = MagicMock(side_effect=requests.HTTPError("503"))
+        with pytest.raises(requests.HTTPError):
+            p._get_forum_threads()
+
+    def test_archived_fetch_failure_is_cached_too(self):
+        p = _poster()
+        p._request = MagicMock(side_effect=[{"threads": []}, requests.HTTPError("429")])
+        with pytest.raises(requests.HTTPError):
+            p._get_forum_threads()
+        with pytest.raises(requests.HTTPError):
+            p._get_forum_threads()
+        assert p._request.call_count == 2
+
+    def test_clear_thread_cache_allows_a_retry_next_cycle(self):
+        p = _poster()
+        p._request = MagicMock(side_effect=requests.HTTPError("429"))
+        with pytest.raises(requests.HTTPError):
+            p._get_forum_threads()
+
+        p.clear_thread_cache()
+        p._request = MagicMock(
+            side_effect=[
+                {"threads": [{"id": "1", "parent_id": "forum"}]},
+                {"threads": []},
+            ]
+        )
+        assert p._get_forum_threads() == [{"id": "1", "parent_id": "forum"}]
+
+    def test_successful_listing_is_still_cached(self):
+        p = _poster()
+        p._request = MagicMock(
+            side_effect=[
+                {"threads": [{"id": "1", "parent_id": "forum"}]},
+                {"threads": [{"id": "2"}]},
+            ]
+        )
+        first = p._get_forum_threads()
+        assert p._get_forum_threads() is first
+        assert p._request.call_count == 2

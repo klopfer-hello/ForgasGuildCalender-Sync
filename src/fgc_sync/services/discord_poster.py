@@ -264,6 +264,7 @@ class DiscordPoster:
         self._session.headers["Authorization"] = f"Bot {bot_token}"
         self._members_cache: list[dict] | None = None
         self._forum_threads_cache: list[dict] | None = None
+        self._forum_threads_error: Exception | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -566,29 +567,47 @@ class DiscordPoster:
         return found["image_id"] if found else None
 
     def _get_forum_threads(self) -> list[dict]:
-        """Get threads under the configured forum (cached per cycle)."""
+        """Get threads under the configured forum (cached per cycle).
+
+        A *failed* listing is cached too and re-raised for the rest of the
+        cycle without issuing another request. Discord rate-limits the
+        thread-listing endpoints hard and every consumer calls this, so
+        retrying per consumer turned a single 429 into a minute of back-off
+        sleeps and a dozen more requests into an already-exhausted bucket.
+
+        The failure is re-raised rather than degraded into an empty list on
+        purpose: callers read "no threads" as "nothing to adopt" and would
+        create duplicate threads. Raising keeps the sync engine's per-event
+        handler skipping the event, which is what it did before.
+        """
+        if self._forum_threads_error is not None:
+            raise self._forum_threads_error
         if self._forum_threads_cache is not None:
             return self._forum_threads_cache
 
         threads: list[dict] = []
 
-        # Active threads (guild-wide endpoint, filter to our forum)
-        data = self._request("GET", f"/guilds/{self._guild_id}/threads/active")
-        if data and "threads" in data:
-            threads.extend(
-                t for t in data["threads"] if t.get("parent_id") == self._forum_id
+        try:
+            # Active threads (guild-wide endpoint, filter to our forum)
+            data = self._request("GET", f"/guilds/{self._guild_id}/threads/active")
+            if data and "threads" in data:
+                threads.extend(
+                    t for t in data["threads"] if t.get("parent_id") == self._forum_id
+                )
+
+            active_ids = {t["id"] for t in threads}
+
+            # Archived threads (forum-specific)
+            data = self._request(
+                "GET",
+                f"/channels/{self._forum_id}/threads/archived/public",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
             )
-
-        active_ids = {t["id"] for t in threads}
-
-        # Archived threads (forum-specific)
-        data = self._request(
-            "GET",
-            f"/channels/{self._forum_id}/threads/archived/public",
-            params={"limit": _PING_HISTORY_SCAN_LIMIT},
-        )
-        if data and "threads" in data:
-            threads.extend(t for t in data["threads"] if t["id"] not in active_ids)
+            if data and "threads" in data:
+                threads.extend(t for t in data["threads"] if t["id"] not in active_ids)
+        except Exception as e:
+            self._forum_threads_error = e
+            raise
 
         self._forum_threads_cache = threads
         return threads
@@ -596,6 +615,7 @@ class DiscordPoster:
     def clear_thread_cache(self):
         """Clear forum threads cache. Call once per sync cycle."""
         self._forum_threads_cache = None
+        self._forum_threads_error = None
 
     def find_thread_by_name(self, name: str) -> str | None:
         """Return the thread id of the first forum thread matching *name*."""

@@ -530,6 +530,7 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 - `message_ids` must not contain `channel_id` — keep thread ID and message metadata separate
 - Before posting a new image, always try `find_image_message` to locate the original
 - Deleting an already-deleted thread (404) must be handled silently
+- A failed forum-thread listing must never degrade into an empty list — callers read "no threads" as "nothing to adopt" and would create duplicates. `_get_forum_threads` caches the *failure* alongside the success and re-raises it for the rest of the cycle, so the sync engine's per-event handler skips the event instead of every consumer re-hammering a rate-limited endpoint (`clear_thread_cache` resets both)
 - `compute_event_hash` must cover **every field the roster image displays** — including the header (date, `serverTimeMinutes`, title, raid, `duration_minutes`), not just the roster. `revision` alone is not a reliable change signal: the addon does not bump it for every in-game edit
 - Never rename a thread whose current name is a valid `_candidate_thread_names` variant — that's another language's client, not a stale name
 
