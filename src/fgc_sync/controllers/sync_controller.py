@@ -12,11 +12,13 @@ from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import DiscordPoster
 from fgc_sync.services.google_calendar import GoogleCalendarClient
 from fgc_sync.services.sync_engine import (
+    can_skip_sync_cycle,
     compute_sync_plan,
     coordinate_client_versions,
     execute_discord_sync,
     execute_sync,
     execute_weekly_sync,
+    saved_variables_mtime,
 )
 
 log = logging.getLogger(__name__)
@@ -108,6 +110,11 @@ class SyncController(QObject):
         self._discord = discord
         self._thread: _SyncThread | None = None
         self._sync_started_at: float = 0
+        # SavedVariables mtime of the last cycle that finished without errors,
+        # and when it finished — the state behind can_skip_sync_cycle.
+        self._last_synced_sv_mtime: int = 0
+        self._last_cycle_finished_at: float = 0
+        self._pending_sv_mtime: int = 0
 
     @property
     def is_syncing(self) -> bool:
@@ -115,7 +122,25 @@ class SyncController(QObject):
 
     @Slot()
     def request_sync(self):
-        """Start a background sync. Ignored if already syncing."""
+        """Start a scheduled sync, unless it would repeat the last one.
+
+        The poll timer and the file watcher come through here. A tick whose
+        SavedVariables is byte-for-byte the one we last synced has nothing new
+        to publish, so it is skipped until the idle interval is up. Use
+        :meth:`force_sync` for anything the user asked for.
+        """
+        if can_skip_sync_cycle(
+            saved_variables_mtime(self._config),
+            self._last_synced_sv_mtime,
+            time.monotonic() - self._last_cycle_finished_at,
+        ):
+            log.debug("SavedVariables unchanged since last sync, skipping cycle")
+            return
+        self.force_sync()
+
+    @Slot()
+    def force_sync(self):
+        """Start a background sync unconditionally. Ignored if already syncing."""
         if self.is_syncing:
             elapsed = time.monotonic() - self._sync_started_at
             if elapsed > _SYNC_TIMEOUT:
@@ -133,6 +158,9 @@ class SyncController(QObject):
             self._gcal.load_credentials()
 
         self._sync_started_at = time.monotonic()
+        # Read before the cycle, not after: a write that lands while we run
+        # must still trigger the next one.
+        self._pending_sv_mtime = saved_variables_mtime(self._config)
         log.debug("Starting sync thread")
         self._thread = _SyncThread(self._config, self._gcal, self._discord)
         self._thread.sync_done.connect(self._on_finished)
@@ -154,6 +182,11 @@ class SyncController(QObject):
     def _on_finished(self, result: SyncResult):
         elapsed = time.monotonic() - self._sync_started_at
         log.debug("Sync worker finished in %.1fs", elapsed)
+        # Only a clean cycle counts as "this data is done" — an errored one is
+        # retried on the next tick rather than waiting out the idle interval.
+        if not result.errors:
+            self._last_synced_sv_mtime = self._pending_sv_mtime
+            self._last_cycle_finished_at = time.monotonic()
         self.sync_completed.emit(result)
 
     def _on_thread_done(self):

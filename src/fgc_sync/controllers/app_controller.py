@@ -55,7 +55,7 @@ class AppController:
         self._gcal.load_credentials()
 
         self._tray.set_icon(create_default_icon())
-        self._tray.sync_requested.connect(self._sync.request_sync)
+        self._tray.sync_requested.connect(self._sync.force_sync)
         self._tray.preview_requested.connect(self._show_preview)
         self._tray.settings_requested.connect(self._show_settings)
         self._tray.update_requested.connect(self._perform_update)
@@ -69,7 +69,7 @@ class AppController:
         else:
             self._start_watcher()
             self._start_poll_timer()
-            self._sync.request_sync()
+            self._sync.force_sync()
 
         # Delay update check to avoid crashing during startup
         QTimer.singleShot(5000, self._start_update_checks)
@@ -81,7 +81,11 @@ class AppController:
         self._update_timer.start(_UPDATE_CHECK_INTERVAL)
 
     def _start_poll_timer(self):
-        """Poll every 5 minutes as a fallback alongside the file watcher."""
+        """Poll every 5 minutes as a fallback alongside the file watcher.
+
+        Gated: a tick whose SavedVariables is unchanged is skipped by
+        ``SyncController.request_sync`` until the idle interval is up.
+        """
         if self._poll_timer:
             self._poll_timer.stop()
         self._poll_timer = QTimer()
@@ -96,7 +100,7 @@ class AppController:
             self._config.commit_transaction()
             self._start_watcher()
             self._start_poll_timer()
-            self._sync.request_sync()
+            self._sync.force_sync()
         else:
             self._config.rollback_transaction()
             if not self._config.is_setup_complete:
@@ -126,7 +130,7 @@ class AppController:
         plan = self._sync.request_preview()
         dialog = PreviewDialog(plan)
         if dialog.exec():
-            self._sync.request_sync()
+            self._sync.force_sync()
 
     def _show_settings(self):
         dialog = SettingsDialog(self._config, self._gcal)
@@ -134,7 +138,7 @@ class AppController:
             self._discord = self._create_discord_poster()
             self._sync._discord = self._discord
             self._start_watcher()
-            self._sync.request_sync()
+            self._sync.force_sync()
 
     def _check_for_update(self):
         if self._update_checking:

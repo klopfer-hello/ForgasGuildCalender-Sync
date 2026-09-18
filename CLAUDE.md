@@ -370,6 +370,7 @@ Legacy mappings missing the `next_*` fields trigger a one-time POST of the next-
 - **File watcher**: watchdog monitors SavedVariables directory, 2s debounce
 - **Poll timer**: every 5 minutes as fallback
 - **Manual**: "Sync Now" from tray menu
+- **Idle gate**: scheduled triggers (poll timer, watcher) go through `SyncController.request_sync`, which consults `can_skip_sync_cycle` and skips the cycle while the SavedVariables mtime is unchanged since the last error-free one. Our own data can only change when the addon rewrites the file, so an unchanged mtime has nothing new to publish; a cycle still runs at least every `IDLE_FULL_SYNC_INTERVAL_SECONDS` (30 min) for the time-driven work (24h thread expiry, week rollover, changelog) and for remote-drift repair. User-initiated syncs call `force_sync` and are never gated. State lives on the controller (in-memory); the CLI is one-shot and cron decides its cadence
 
 ## Auto-Update (`updater.py`)
 

@@ -73,6 +73,52 @@ _EVENT_FEATURE_VERSION = 2
 _BULK_DELETION_GUARD_MIN = 3  # don't guard removals smaller than this
 _BULK_DELETION_GUARD_FRACTION = 0.5  # suspicious above this share of the mapping
 
+# How long a client may coast on an unchanged SavedVariables file before it
+# runs a full cycle anyway. Our own data can only change when the addon
+# rewrites the file, so between two mtimes there is nothing new to publish —
+# but a cycle also does time-driven work (24h thread expiry, the week
+# rollover, the release changelog) and repairs remote drift (an event or
+# thread deleted elsewhere), and that must not stall. This is the ceiling on
+# how late any of it can be; every SavedVariables write still syncs at once.
+IDLE_FULL_SYNC_INTERVAL_SECONDS = 30 * 60
+
+
+def can_skip_sync_cycle(
+    sv_mtime: int,
+    last_synced_sv_mtime: int,
+    seconds_since_last_cycle: float,
+) -> bool:
+    """Whether a scheduled cycle would only repeat the previous one.
+
+    True when SavedVariables has not been rewritten since the last successful
+    cycle *and* that cycle is recent enough that no time-driven work is due
+    (see :data:`IDLE_FULL_SYNC_INTERVAL_SECONDS`). An unreadable mtime (``0``)
+    or a cycle that has not completed successfully yet never skips.
+
+    Pure and read-only — the caller owns the state. Only scheduled polls are
+    gated; anything the user asks for runs unconditionally.
+    """
+    if not sv_mtime or not last_synced_sv_mtime:
+        return False
+    if sv_mtime != last_synced_sv_mtime:
+        return False
+    return seconds_since_last_cycle < IDLE_FULL_SYNC_INTERVAL_SECONDS
+
+
+def saved_variables_mtime(config: Config) -> int:
+    """Whole-second mtime of the SavedVariables file, or ``0`` if unreadable.
+
+    Same value the roster-image filenames embed, so it compares directly
+    against what other clients publish.
+    """
+    sv_path = config.saved_variables_path
+    if not sv_path or not sv_path.exists():
+        return 0
+    try:
+        return int(sv_path.stat().st_mtime)
+    except OSError:
+        return 0
+
 
 def _coerce_pinged(existing: dict | None) -> dict[str, str]:
     """Return ``{name: message_id}``, accepting legacy list / ``confirmed`` shapes.
@@ -98,10 +144,7 @@ def _coerce_pinged(existing: dict | None) -> dict[str, str]:
 
 def _is_local_data_stale(config: Config, discord: DiscordPoster) -> bool:
     """Return True if another client has newer SavedVariables data on Discord."""
-    sv_path = config.saved_variables_path
-    local_sv_mtime = 0
-    if sv_path and sv_path.exists():
-        local_sv_mtime = int(sv_path.stat().st_mtime)
+    local_sv_mtime = saved_variables_mtime(config)
     try:
         remote_sv_mtime = discord.get_max_remote_sv_mtime()
     except Exception as e:
@@ -779,10 +822,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     if _is_local_data_stale(config, discord):
         return result
 
-    sv_path = config.saved_variables_path
-    local_sv_mtime = 0
-    if sv_path and sv_path.exists():
-        local_sv_mtime = int(sv_path.stat().st_mtime)
+    local_sv_mtime = saved_variables_mtime(config)
 
     now = datetime.now(ZoneInfo(timezone))
 
@@ -1276,8 +1316,7 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     nxt_hash = compute_weekly_hash(nxt_events)
     mapping: dict = config.get("discord_weekly_mapping", {}) or {}
 
-    sv_path = config.saved_variables_path
-    sv_mtime = int(sv_path.stat().st_mtime) if sv_path and sv_path.exists() else 0
+    sv_mtime = saved_variables_mtime(config)
 
     # Embed the tool version (before _h, so the hash/mtime suffix older clients
     # parse stays intact) — the sole cross-client version signal for the gate.
