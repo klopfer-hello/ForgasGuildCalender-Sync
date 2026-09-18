@@ -253,6 +253,7 @@ WoW character name matched as **case-insensitive substring** of Discord server n
 - Image filename: `roster_<event_id>[_v<version>]_h<hash>_t<sv_mtime>.png` (the `_v<version>` segment is the cross-client version signal; legacy names without it still parse)
 - Thread dedup: deterministic thread names prevent duplicate creation
 - Image dedup: `_find_image_in_thread` scans up to 100 messages before posting a new image
+- Filename scans share one listing: the stale-data guard and the version gate both walk every forum thread, and the guard runs twice per cycle (per-event + weekly), so `_get_recent_messages` caches the last `_MESSAGE_SCAN_LIMIT` messages per thread for the cycle. Any non-GET request clears it (`_retry_request`), so a scan after a post or patch sees the new attachment; `clear_thread_cache` drops it with the thread list
 - Ping dedup: `get_already_pinged_names` scans thread history for prior bot pings
 - Stale-data guard: clients with older SavedVariables skip writing
 - Version coordination (see below): older clients defer to newer ones

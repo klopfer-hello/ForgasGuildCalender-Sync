@@ -265,6 +265,7 @@ class DiscordPoster:
         self._members_cache: list[dict] | None = None
         self._forum_threads_cache: list[dict] | None = None
         self._forum_threads_error: Exception | None = None
+        self._recent_messages_cache: dict[str, list[dict]] = {}
 
     @property
     def is_configured(self) -> bool:
@@ -616,6 +617,31 @@ class DiscordPoster:
         """Clear forum threads cache. Call once per sync cycle."""
         self._forum_threads_cache = None
         self._forum_threads_error = None
+        self._recent_messages_cache = {}
+
+    def _get_recent_messages(self, thread_id: str) -> list[dict]:
+        """The last few messages of *thread_id*, cached within a sync cycle.
+
+        The filename scanners (stale-data guard, version gate) each walk every
+        forum thread, and the guard alone runs twice per cycle — once for the
+        per-event sync and once for the weekly overview. Without this they
+        fetch the same listing three times over. Any write invalidates the
+        cache (see :meth:`_retry_request`), so a scan after a post or a patch
+        still sees the new attachment.
+        """
+        cached = self._recent_messages_cache.get(thread_id)
+        if cached is not None:
+            return cached
+        messages = (
+            self._request(
+                "GET",
+                f"/channels/{thread_id}/messages",
+                params={"limit": _MESSAGE_SCAN_LIMIT},
+            )
+            or []
+        )
+        self._recent_messages_cache[thread_id] = messages
+        return messages
 
     def find_thread_by_name(self, name: str) -> str | None:
         """Return the thread id of the first forum thread matching *name*."""
@@ -747,11 +773,7 @@ class DiscordPoster:
         for th in threads:
             th_id = th["id"]
             try:
-                messages = self._request(
-                    "GET",
-                    f"/channels/{th_id}/messages",
-                    params={"limit": _MESSAGE_SCAN_LIMIT},
-                )
+                messages = self._get_recent_messages(th_id)
             except requests.HTTPError:
                 continue
             for msg in messages or []:
@@ -1117,11 +1139,7 @@ class DiscordPoster:
         best_str: str | None = None
         for th in threads:
             try:
-                messages = self._request(
-                    "GET",
-                    f"/channels/{th['id']}/messages",
-                    params={"limit": _MESSAGE_SCAN_LIMIT},
-                )
+                messages = self._get_recent_messages(th["id"])
             except requests.HTTPError:
                 continue
             for msg in messages or []:
@@ -1313,6 +1331,9 @@ class DiscordPoster:
         instead of failing the caller on the first response. Neither case
         sleeps after the final attempt — the response is about to be raised.
         """
+        if method.upper() != "GET":
+            # A post/patch/delete can change any thread's recent messages.
+            self._recent_messages_cache = {}
         resp = None
         for attempt in range(_MAX_RETRIES):
             resp = self._session.request(
