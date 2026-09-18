@@ -154,7 +154,7 @@ Read the function for the actual flow. Invariants that have to hold:
 
 - Only events where the user's character is **Signed** or **Confirmed** are synced
 - **Adopt before create**: every event missing from the local mapping is searched in Google by title+date before a new event is created (recovers from lost mapping)
-- **Verify before trust**: even when revision matches, the Google event is checked for existence — externally deleted events are re-created
+- **Verify before trust**: even when revision matches, the Google event is checked for existence — externally deleted events are re-created. `event_exists` reports "gone" **only** on a definitive 404/410 and raises everything else (dropped connection, 5xx, auth): a failed request that returned `False` would be read as an external deletion and re-create a live event on every cycle it fails. All Google calls run through `GoogleCalendarClient._execute`, which drops the cached service and retries once when the pooled httplib2 connection dies between poll cycles (`insert` reconnects but never repeats — a reset cannot prove the server didn't see it). The dry-run plan downgrades an unanswerable check to "nothing to do" (`_plan_event_missing`) so a preview never aborts
 - **Feature-version back-fill** (`_EVENT_FEATURE_VERSION`, currently `2`): a mapping entry whose stored `feat` differs forces a one-time re-PATCH, so already-synced events pick up a newly added body field even when their revision is unchanged. Bump it whenever the event body gains such a field (`1` = tentative status + transparency, `2` = per-event duration)
 - **Mass-deletion guard**: if WoW yields zero events but the mapping is non-empty, treat it as a parser failure and skip cleanup entirely
 - Events absent from WoW *or* listed in `deletedEvents` are deleted from Google
@@ -516,7 +516,7 @@ CI pipeline (`lint.yml`): runs pre-commit + pytest with coverage upload to Codec
 
 ### Google Calendar
 
-- Always verify events exist before assuming (externally deleted)
+- Always verify events exist before assuming (externally deleted) — and never let a failed request stand in for that answer: only a 404/410 means gone
 - Always search for duplicates before creating (lost mapping)
 - Use `serverTimeMinutes` for time, never `serverHour`/`serverMinute` alone
 - Filter to events where user's character is Signed or Confirmed

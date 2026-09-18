@@ -12,11 +12,19 @@ from google.oauth2.credentials import Credentials
 from google_auth_httplib2 import AuthorizedHttp
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
 _HTTP_TIMEOUT = 30  # seconds for all Google API calls
+# Errors that mean "the connection died", not "the server said no". The
+# httplib2 connection behind the cached service sits idle between poll cycles
+# and the peer eventually drops it, so the first call of a cycle can fail on a
+# socket that was fine five minutes ago.
+_TRANSPORT_ERRORS = (OSError, httplib2.HttpLib2Error)
+# Google status codes that mean the event is genuinely gone.
+_GONE_STATUS = (404, 410)
 
 
 class GoogleCalendarClient:
@@ -73,7 +81,9 @@ class GoogleCalendarClient:
         result = []
         page_token = None
         while True:
-            response = service.calendarList().list(pageToken=page_token).execute()
+            response = self._execute(
+                lambda token=page_token: service.calendarList().list(pageToken=token)
+            )
             for item in response.get("items", []):
                 result.append(
                     {
@@ -101,11 +111,11 @@ class GoogleCalendarClient:
         body = self._build_event_body(
             summary, start, duration_hours, description, location, tentative
         )
-        event = (
-            self._get_service()
-            .events()
-            .insert(calendarId=calendar_id, body=body)
-            .execute()
+        event = self._execute(
+            lambda: (
+                self._get_service().events().insert(calendarId=calendar_id, body=body)
+            ),
+            retry=False,
         )
         return event["id"]
 
@@ -124,29 +134,30 @@ class GoogleCalendarClient:
         body = self._build_event_body(
             summary, start, duration_hours, description, location, tentative
         )
-        (
-            self._get_service()
-            .events()
-            .update(calendarId=calendar_id, eventId=event_id, body=body)
-            .execute()
+        self._execute(
+            lambda: (
+                self._get_service()
+                .events()
+                .update(calendarId=calendar_id, eventId=event_id, body=body)
+            )
         )
 
     def find_event_by_summary(
         self, calendar_id: str, summary: str, date: str
     ) -> str | None:
         """Find an existing event by summary and date. Returns Google event ID or None."""
-        try:
-            time_min = f"{date}T00:00:00+00:00"
-            # Search a 48h window to handle timezone offsets
-            parts = date.split("-")
-            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-            from datetime import date as dt_date
-            from datetime import timedelta
+        time_min = f"{date}T00:00:00+00:00"
+        # Search a 48h window to handle timezone offsets
+        parts = date.split("-")
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        from datetime import date as dt_date
+        from datetime import timedelta
 
-            next_day = dt_date(y, m, d) + timedelta(days=2)
-            time_max = f"{next_day.isoformat()}T00:00:00+00:00"
+        next_day = dt_date(y, m, d) + timedelta(days=2)
+        time_max = f"{next_day.isoformat()}T00:00:00+00:00"
 
-            response = (
+        response = self._execute(
+            lambda: (
                 self._get_service()
                 .events()
                 .list(
@@ -156,36 +167,48 @@ class GoogleCalendarClient:
                     singleEvents=True,
                     maxResults=50,
                 )
-                .execute()
             )
-            for item in response.get("items", []):
-                if item.get("summary") == summary and item.get("status") != "cancelled":
-                    return item["id"]
-        except Exception as e:
-            log.debug("Error searching for event: %s", e)
+        )
+        for item in response.get("items", []):
+            if item.get("summary") == summary and item.get("status") != "cancelled":
+                return item["id"]
         return None
 
     def event_exists(self, calendar_id: str, event_id: str) -> bool:
-        """Check if an event still exists in Google Calendar."""
+        """Check if an event still exists in Google Calendar.
+
+        Returns ``False`` only when Google says the event is gone (404/410) or
+        cancelled. Every other failure — a dropped connection, a 5xx, an auth
+        error — is raised: the caller treats ``False`` as "deleted externally"
+        and re-creates the event, so swallowing a transport error here would
+        duplicate the entry on every cycle a request happens to fail.
+        """
         try:
-            evt = (
-                self._get_service()
-                .events()
-                .get(calendarId=calendar_id, eventId=event_id)
-                .execute()
+            evt = self._execute(
+                lambda: (
+                    self._get_service()
+                    .events()
+                    .get(calendarId=calendar_id, eventId=event_id)
+                )
             )
-            return evt.get("status") != "cancelled"
-        except Exception:
-            return False
+        except HttpError as e:
+            if e.resp.status in _GONE_STATUS:
+                return False
+            raise
+        return evt.get("status") != "cancelled"
 
     def delete_event(self, calendar_id: str, event_id: str):
         """Delete a calendar event. Silently ignores already-deleted events."""
         try:
-            self._get_service().events().delete(
-                calendarId=calendar_id, eventId=event_id
-            ).execute()
-        except Exception as e:
-            if "404" in str(e) or "410" in str(e):
+            self._execute(
+                lambda: (
+                    self._get_service()
+                    .events()
+                    .delete(calendarId=calendar_id, eventId=event_id)
+                )
+            )
+        except HttpError as e:
+            if e.resp.status in _GONE_STATUS:
                 log.info("Event %s already deleted", event_id)
             else:
                 raise
@@ -199,6 +222,24 @@ class GoogleCalendarClient:
             )
             self._service = build("calendar", "v3", http=http)
         return self._service
+
+    def _execute(self, build_request, *, retry: bool = True):
+        """Execute an API request, rebuilding a dead connection once.
+
+        *build_request* is a callable so the retry builds its request against
+        the fresh service. ``retry=False`` is for non-idempotent calls: the
+        connection is still dropped so the next cycle starts clean, but the
+        request is not repeated — a connection reset cannot prove the server
+        never saw it.
+        """
+        try:
+            return build_request().execute()
+        except _TRANSPORT_ERRORS as e:
+            self._service = None
+            if not retry:
+                raise
+            log.info("Google: connection lost (%s), reconnecting and retrying", e)
+            return build_request().execute()
 
     def _save_token(self):
         self._token_path.write_text(self._creds.to_json())

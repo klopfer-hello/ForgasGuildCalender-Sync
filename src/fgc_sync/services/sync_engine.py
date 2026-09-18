@@ -251,6 +251,25 @@ def _would_blank_remote_week(
     return bool(remote_hash) and remote_hash != EMPTY_WEEK_HASH
 
 
+def _plan_event_missing(
+    gcal: GoogleCalendarClient | None, calendar_id: str, google_id: str
+) -> bool:
+    """Read-only "was this event deleted externally?" for the dry-run plan.
+
+    ``event_exists`` raises on anything that is not a definitive 404/410 so the
+    real sync never mistakes a failed request for a deleted event. A plan is
+    only a preview, so an unanswerable check is reported as "nothing to do"
+    rather than aborting the whole preview.
+    """
+    if not gcal or not calendar_id:
+        return False
+    try:
+        return not gcal.event_exists(calendar_id, google_id)
+    except Exception as e:
+        log.warning("Sync plan: existence check failed for %s: %s", google_id, e)
+        return False
+
+
 def compute_sync_plan(
     config: Config, gcal: GoogleCalendarClient | None = None
 ) -> SyncPlan:
@@ -300,11 +319,7 @@ def compute_sync_plan(
                     info,
                 )
             )
-        elif (
-            gcal
-            and calendar_id
-            and not gcal.event_exists(calendar_id, existing["google_id"])
-        ):
+        elif _plan_event_missing(gcal, calendar_id, existing["google_id"]):
             plan.entries.append(
                 SyncPlanEntry(
                     SyncAction.CREATE,
