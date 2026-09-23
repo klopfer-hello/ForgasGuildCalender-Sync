@@ -1259,7 +1259,15 @@ def compute_weekly_sync_plan(
         f"{len(nxt_events)} raid(s), week {nxt_week_key} "
         f"({nxt_monday.isoformat()}..{nxt_sunday.isoformat()})"
     )
-    if not mapping.get("next_message_id"):
+    # Mirror execute_weekly_sync: the reply is whatever the thread scan finds,
+    # not what our mapping remembers, so the preview doesn't announce a CREATE
+    # for a reply the real sync would adopt from another client.
+    reply = (
+        discord.find_weekly_reply(mapping["channel_id"], nxt_week_key)
+        if mapping.get("channel_id")
+        else None
+    )
+    if not reply:
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.CREATE,
@@ -1272,10 +1280,9 @@ def compute_weekly_sync_plan(
             )
         )
     elif (
-        mapping.get("next_hash") != nxt_hash
-        or mapping.get("next_week_key") != nxt_week_key
+        reply[2] != nxt_hash or reply[1] != nxt_week_key
     ) and not _would_blank_remote_week(
-        discord, mapping.get("channel_id"), mapping.get("next_message_id"), nxt_hash
+        discord, mapping.get("channel_id"), reply[0], nxt_hash
     ):
         plan.entries.append(
             SyncPlanEntry(
@@ -1363,7 +1370,9 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
     cur_summary = format_weekly_summary(cur_monday, len(cur_events))
     nxt_summary = format_weekly_summary(nxt_monday, len(nxt_events))
     weekly_name = get_weekly_thread_name()
-    next_message_id: str | None = mapping.get("next_message_id")
+    # Deliberately not seeded from the mapping: the reply is identified by
+    # scanning the thread below, so a stale id can't send us down the POST path.
+    next_message_id: str | None = None
 
     try:
         # ---- Starter message (current week) ----
@@ -1408,11 +1417,17 @@ def execute_weekly_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 result.created += 1
 
         # ---- Second message (next week) ----
-        # Existing message: PATCH if anything changed, else skip.
-        # Missing or gone: POST a new reply.
-        if next_message_id and discord.message_exists(channel_id, next_message_id):
-            same_week = mapping.get("next_week_key") == nxt_week_key
-            same_hash = mapping.get("next_hash") == nxt_hash
+        # Which message *is* the reply is decided by scanning the thread, not
+        # by our own mapping: a second client's reply is invisible to us
+        # otherwise, so we would post our own and delete theirs as an orphan
+        # while they do the mirror image of that, forever. The scan picks the
+        # same message on every client, so they converge and the duplicates
+        # collapse. Only a genuinely empty thread reaches the POST below.
+        reply = discord.find_weekly_reply(channel_id, nxt_week_key)
+        if reply:
+            next_message_id, remote_week_key, remote_hash = reply
+            same_week = remote_week_key == nxt_week_key
+            same_hash = remote_hash == nxt_hash
             if same_week and same_hash:
                 result.skipped += 1
             elif _would_blank_remote_week(

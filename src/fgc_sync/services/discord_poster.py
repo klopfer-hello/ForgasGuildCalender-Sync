@@ -37,9 +37,13 @@ _WEEKLY_FILENAME_PATTERN = re.compile(r"weekly_.+\.png")
 # Roster ICS attachment: ``<Raid>_<date>_h<hash>.ics``. The ``_h<hash>`` suffix
 # lets the thread scan detect a stale calendar file without downloading it.
 _ICS_FILENAME_PATTERN = re.compile(r"_h([a-f0-9]+)\.ics$")
-# Same shape as above but captures the embedded content hash so we can read the
-# image a message *currently* shows (independent of any one client's mapping).
-_WEEKLY_HASH_PATTERN = re.compile(r"weekly_.+_h([a-f0-9]+)_t\d+\.png")
+# ``weekly_<week_key>[_v<version>]_h<hash>_t<mtime>.png`` split into its parts.
+# The week key and content hash are what let *any* client recognise the reply
+# for a given week and what it currently shows, independent of which client
+# wrote it — the weekly thread's only cross-client message marker.
+_WEEKLY_PARTS_PATTERN = re.compile(
+    r"weekly_(.+?)(?:_v[\d.]+)?_h([a-f0-9]+)(?:_t(\d+))?\.png"
+)
 # Extracts the embedded tool version from any image filename, if present.
 _FILENAME_VERSION_PATTERN = re.compile(r"_v(\d+(?:\.\d+)+)_h[a-f0-9]+")
 
@@ -1122,10 +1126,64 @@ class DiscordPoster:
         if not isinstance(msg, dict):
             return None
         for att in msg.get("attachments", []):
-            m = _WEEKLY_HASH_PATTERN.match(att.get("filename", ""))
+            m = _WEEKLY_PARTS_PATTERN.match(att.get("filename", ""))
             if m:
-                return m.group(1)
+                return m.group(2)
         return None
+
+    def find_weekly_reply(
+        self, channel_id: str, week_key: str
+    ) -> tuple[str, str, str] | None:
+        """Locate the next-week reply in the weekly thread, whoever posted it.
+
+        A client only knows the reply id *it* posted itself, so with two
+        clients running each posts its own reply and then deletes the other's
+        as an orphan — forever (observed: 65 post/delete rounds over ten days).
+        The week key embedded in the image filename is the stable per-week
+        marker that lets every client settle on the *same* message instead.
+
+        Prefers a reply already showing *week_key*; failing that, returns the
+        oldest weekly reply in the thread, which is the slot to repurpose on
+        week rollover (the design has always PATCHed the reply across weeks
+        rather than reposting). Among several candidates the lowest id wins —
+        oldest first, a choice every client computes identically, so they
+        converge and :meth:`cleanup_weekly_thread_orphans` collapses the rest.
+
+        Scans with the same limit as the orphan cleanup: a reply the cleanup
+        can see but this scan cannot would be deleted right after we posted a
+        duplicate, which is the very loop this exists to break.
+
+        Returns ``(message_id, week_key, content_hash)`` or ``None``.
+        """
+        try:
+            messages = self._request(
+                "GET",
+                f"/channels/{channel_id}/messages",
+                params={"limit": _PING_HISTORY_SCAN_LIMIT},
+            )
+        except requests.HTTPError:
+            return None
+
+        exact: tuple[str, str, str] | None = None
+        oldest: tuple[str, str, str] | None = None
+        for msg in messages or []:
+            msg_id = msg.get("id")
+            # The starter always carries the *current* week — never the reply.
+            if not msg_id or msg_id == channel_id:
+                continue
+            for att in msg.get("attachments", []):
+                m = _WEEKLY_PARTS_PATTERN.match(att.get("filename", ""))
+                if not m:
+                    continue
+                found = (msg_id, m.group(1), m.group(2))
+                if oldest is None or int(msg_id) < int(oldest[0]):
+                    oldest = found
+                if m.group(1) == week_key and (
+                    exact is None or int(msg_id) < int(exact[0])
+                ):
+                    exact = found
+                break
+        return exact or oldest
 
     def get_max_remote_version(self) -> str | None:
         """Highest tool version embedded in any forum image filename.

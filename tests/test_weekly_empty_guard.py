@@ -43,6 +43,8 @@ def _discord(remote_hash):
     d.clear_thread_cache = MagicMock()
     d.ensure_unarchived = MagicMock(return_value=True)
     d.message_exists = MagicMock(return_value=True)
+    # The next-week reply exists remotely and shows a different (populated) week.
+    d.find_weekly_reply = MagicMock(return_value=("reply-id", "2999-W01", "populated"))
     d.get_weekly_image_hash = MagicMock(return_value=remote_hash)
     d.update_weekly_image = MagicMock()
     d.post_weekly_image = MagicMock(return_value="reply-id")

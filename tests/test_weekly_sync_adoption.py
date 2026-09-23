@@ -67,9 +67,14 @@ def patched_collect(monkeypatch):
     )
 
 
-def _make_discord(message_exists: bool = True) -> MagicMock:
+def _make_discord(
+    message_exists: bool = True,
+    reply: tuple[str, str, str] | None = None,
+) -> MagicMock:
+    """*reply* is what a thread scan finds for the next-week slot (None = none)."""
     discord = MagicMock()
     discord.is_configured = True
+    discord.find_weekly_reply = MagicMock(return_value=reply)
     discord.clear_thread_cache = MagicMock()
     discord.find_thread_by_name = MagicMock(return_value=_EXISTING_THREAD_ID)
     discord.ensure_unarchived = MagicMock()
@@ -160,7 +165,9 @@ class TestStarterTargeting:
                 "sv_mtime": 0,
             },
         )
-        discord = _make_discord()
+        # The next-week skip is decided by what the thread actually shows,
+        # not by our mapping — so the scan must report a matching reply.
+        discord = _make_discord(reply=("reply-id-123", nxt_week, nxt_hash))
 
         result = sync_engine.execute_weekly_sync(config, discord)
 

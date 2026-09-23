@@ -8,7 +8,7 @@ from __future__ import annotations
 from fgc_sync.services.discord_poster import (
     _FILENAME_PATTERN,
     _FILENAME_VERSION_PATTERN,
-    _WEEKLY_HASH_PATTERN,
+    _WEEKLY_PARTS_PATTERN,
 )
 
 EVENT_ID = "fgc-1781633138-305122-81"
@@ -47,5 +47,15 @@ class TestVersionExtraction:
 class TestWeeklyHashUnaffected:
     def test_weekly_hash_parses_with_version(self):
         fn = "weekly_2026-W26_v2.11.1_hdeadbeef_t1782300000.png"
-        m = _WEEKLY_HASH_PATTERN.match(fn)
-        assert m is not None and m.group(1) == "deadbeef"
+        m = _WEEKLY_PARTS_PATTERN.match(fn)
+        assert m is not None
+        assert m.group(1) == "2026-W26"
+        assert m.group(2) == "deadbeef"
+        assert m.group(3) == "1782300000"
+
+    def test_weekly_parts_parse_without_version(self):
+        """Legacy filenames predate the _v segment and must still split."""
+        m = _WEEKLY_PARTS_PATTERN.match("weekly_2026-W26_hdeadbeef_t1782300000.png")
+        assert m is not None
+        assert m.group(1) == "2026-W26"
+        assert m.group(2) == "deadbeef"
