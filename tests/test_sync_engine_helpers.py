@@ -377,4 +377,4 @@ class TestConstants:
         assert EXPIRED_EVENT_HOURS == 24
 
     def test_discord_lookahead_days(self):
-        assert DISCORD_LOOKAHEAD_DAYS == 7
+        assert DISCORD_LOOKAHEAD_DAYS == 14

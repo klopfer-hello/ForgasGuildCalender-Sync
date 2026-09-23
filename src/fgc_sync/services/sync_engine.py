@@ -10,6 +10,7 @@ from fgc_sync._version import __version__
 from fgc_sync.models import (
     Attendance,
     CalendarEvent,
+    EventType,
     SyncAction,
     SyncPlan,
     SyncPlanEntry,
@@ -17,9 +18,11 @@ from fgc_sync.models import (
 )
 from fgc_sync.services.config import Config
 from fgc_sync.services.discord_poster import (
+    CANCELLATION_MARKER_CANCELLED,
     DiscordPoster,
     _short_raid_name,
     compute_event_hash,
+    snowflake_datetime,
 )
 from fgc_sync.services.event_duration import (
     apply_effective_durations,
@@ -33,7 +36,10 @@ from fgc_sync.services.lua_parser import (
     list_character_names,
     parse_saved_variables,
 )
-from fgc_sync.services.raid_conflicts import mark_unavailable_participants
+from fgc_sync.services.raid_conflicts import (
+    is_event_cancelled,
+    mark_unavailable_participants,
+)
 from fgc_sync.services.updater import check_for_update
 from fgc_sync.services.weekly_overview import (
     EMPTY_WEEK_HASH,
@@ -50,7 +56,16 @@ from fgc_sync.services.weekly_overview import (
 log = logging.getLogger(__name__)
 
 EXPIRED_EVENT_HOURS = 24  # delete Discord threads this long after event start
-DISCORD_LOOKAHEAD_DAYS = 7  # only post events within this window
+DISCORD_LOOKAHEAD_DAYS = 14  # only post events within this window
+# How long a cancelled raid's thread stays up after the cancellation notice, so
+# signed members have a day to see it. Counted from the notice's Discord
+# timestamp — the same moment on every client, whichever one posted it.
+CANCELLED_THREAD_GRACE_HOURS = 24
+# Who is told about a cancellation or reinstatement: everyone who signed up in
+# any form. Declined members already said they won't come.
+_NOTICE_ATTENDANCE = frozenset(
+    {Attendance.SIGNED, Attendance.CONFIRMED, Attendance.BENCHED}
+)
 _SLOW_OPERATION_SECONDS = 5  # warn when a single event takes longer
 
 # Format version of the Google event body written by this code. Bumped
@@ -650,6 +665,37 @@ def compute_discord_sync_plan(
         msg_ids = (existing or {}).get("message_ids")
         prev_pinged = _coerce_pinged(existing)
 
+        # Mirrors execute_discord_sync: a cancelled raid never gets a new
+        # thread, and an existing one gets at most one notice.
+        if is_event_cancelled(evt):
+            if channel_id is None or now >= event_dt:
+                continue
+            try:
+                marker = discord.find_cancellation_marker(channel_id)
+            except Exception as e:
+                # A preview reports nothing rather than a notice it can't vouch
+                # for (cf. _plan_event_missing); the real sync skips the event.
+                log.warning(
+                    "Discord plan: cancellation scan failed for %s: %s", title, e
+                )
+                continue
+            if not marker or marker[0] != CANCELLATION_MARKER_CANCELLED:
+                plan.entries.append(
+                    SyncPlanEntry(
+                        SyncAction.UPDATE,
+                        event_id,
+                        title,
+                        evt.date,
+                        evt.time_str,
+                        evt.type_label,
+                        f"cancelled, notify {len(_notice_recipients(evt))}",
+                    )
+                )
+            continue
+
+        if channel_id is None and now >= event_dt:
+            continue  # execute_discord_sync never creates one for a started raid
+
         if channel_id is None:
             plan.entries.append(
                 SyncPlanEntry(
@@ -679,6 +725,18 @@ def compute_discord_sync_plan(
 
             old_hash = (msg_ids or {}).get("hash")
             change_bits: list[str] = []
+            if (existing or {}).get("cancelled") and now < event_dt:
+                try:
+                    marker = discord.find_cancellation_marker(channel_id)
+                except Exception as e:
+                    log.warning(
+                        "Discord plan: cancellation scan failed for %s: %s", title, e
+                    )
+                    marker = None
+                if marker and marker[0] == CANCELLATION_MARKER_CANCELLED:
+                    change_bits.append(
+                        f"reinstated, notify {len(_notice_recipients(evt))}"
+                    )
             new_name = discord.pending_thread_rename(channel_id, evt)
             if new_name:
                 change_bits.append(f"rename thread to {new_name!r}")
@@ -735,7 +793,7 @@ def compute_discord_sync_plan(
             f"of {len(mapping)} threads (likely divergent/partial data)."
         )
 
-    for event_id, _info_map in mapping.items():
+    for event_id, info_map in mapping.items():
         if event_id in expired_ids:
             plan.entries.append(
                 SyncPlanEntry(
@@ -762,22 +820,28 @@ def compute_discord_sync_plan(
                     )
                 )
             continue
-        # Expired (24+ hours ago)
+        # Expired (24+ hours ago), or a cancelled raid past its notice window
         evt = all_events.get(event_id)
         if evt:
             event_dt = _event_to_datetime(evt, timezone)
-            if (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
-                plan.entries.append(
-                    SyncPlanEntry(
-                        SyncAction.DELETE,
-                        event_id,
-                        evt.title,
-                        evt.date,
-                        evt.time_str,
-                        evt.type_label,
-                        "expired",
-                    )
+            notice_id = (info_map.get("cancelled") or {}).get("notice_id")
+            if notice_id and now >= _cancelled_thread_deadline(notice_id):
+                reason = "cancelled"
+            elif (now - event_dt).total_seconds() / 3600 >= EXPIRED_EVENT_HOURS:
+                reason = "expired"
+            else:
+                continue
+            plan.entries.append(
+                SyncPlanEntry(
+                    SyncAction.DELETE,
+                    event_id,
+                    evt.title,
+                    evt.date,
+                    evt.time_str,
+                    evt.type_label,
+                    reason,
                 )
+            )
 
     return plan
 
@@ -870,48 +934,44 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 prev_pinged = {}
 
             # Adopt-before-create — covers both no-mapping and the self-heal case
-            # above. Collect every thread matching this event in *any* language
-            # and keep a single deterministic survivor, deleting the rest. This
-            # both prevents and cleans up cross-language / multi-client duplicate
-            # threads. The survivor is the thread whose roster image carries the
-            # highest tool version (so the up-to-date copy wins, not an old
-            # client's), tie-broken by lowest id — a client-independent choice so
-            # every client converges on the same thread.
+            # above.
             if channel_id is None:
-                matches = discord.find_event_threads(evt)
-                if matches:
-                    survivor = max(
-                        matches,
-                        key=lambda t: (
-                            _parse_version(t.get("version") or "0"),
-                            -int(t["channel_id"]),
-                        ),
-                    )
-                    for dup in matches:
-                        if dup["channel_id"] == survivor["channel_id"]:
-                            continue
-                        try:
-                            discord.delete_thread(dup["channel_id"])
-                            result.deleted += 1
-                            log.info(
-                                "Discord: removed duplicate thread %s for %s",
-                                dup["channel_id"],
-                                evt.title,
-                            )
-                        except Exception as e:
-                            log.warning(
-                                "Discord: failed to delete duplicate %s: %s",
-                                dup["channel_id"],
-                                e,
-                            )
-                    discord.ensure_unarchived(survivor["channel_id"])
-                    channel_id = survivor["channel_id"]
-                    msg_ids = {
-                        "image_id": survivor.get("image_id"),
-                        "hash": survivor.get("hash"),
-                    }
+                channel_id, adopted_ids = _adopt_event_thread(discord, evt, result)
+                if channel_id is not None:
+                    msg_ids = adopted_ids
                     prev_pinged = {}
-                    log.info("Discord: adopted existing thread for %s", evt.title)
+
+            # A cancelled raid is frozen: no image, roster or ping changes —
+            # only the one notice to everyone who signed up, and the thread is
+            # kept for CANCELLED_THREAD_GRACE_HOURS after it (see cleanup).
+            if is_event_cancelled(evt):
+                if channel_id is None:
+                    # Never create a thread just to announce a cancellation.
+                    mapping.pop(event_id, None)
+                    continue
+                notice_id, posted = _announce_cancellation(
+                    discord, channel_id, evt, raid_started=now >= event_dt
+                )
+                entry = {
+                    "channel_id": channel_id,
+                    "message_ids": msg_ids,
+                    "pinged": prev_pinged,
+                    "ics": (existing or {}).get("ics"),
+                }
+                if notice_id:
+                    entry["cancelled"] = {"notice_id": notice_id}
+                mapping[event_id] = entry
+                if posted:
+                    result.updated += 1
+                else:
+                    result.skipped += 1
+                continue
+
+            if channel_id is None and now >= event_dt:
+                # Too late to be useful: a raid that is already under way would
+                # get a thread only to have it expire a few hours later.
+                mapping.pop(event_id, None)
+                continue
 
             if channel_id is None:
                 # New event — create forum thread with roster image
@@ -959,6 +1019,17 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                         )
                     result.updated += 1
 
+            # The raid was cancelled when we last saw it and is back on: tell
+            # the same people who got the cancellation notice. Only a client
+            # that saw the cancellation knows to look; the thread scan inside
+            # keeps two such clients from both announcing it.
+            reinstated = (
+                not is_new_thread
+                and bool((existing or {}).get("cancelled"))
+                and now < event_dt
+                and _announce_reinstatement(discord, channel_id, evt)
+            )
+
             # Scan thread history to catch pings from other clients that
             # are not reflected in our local mapping. History wins on
             # conflict so we always have the freshest message id we can
@@ -992,9 +1063,12 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             if to_ping:
                 from fgc_sync.i18n import t as _t
 
+                # "Newly" only once somebody here has been pinged before — a
+                # thread created ahead of its roster still gets a plain first
+                # "Confirmed" ping when the raid lead builds the groups.
                 label = (
                     _t("discord.ping_confirmed")
-                    if is_new_thread
+                    if is_new_thread or not prev_pinged
                     else _t("discord.ping_newly_confirmed")
                 )
                 newly_pinged = discord.ping_members(channel_id, to_ping, label)
@@ -1029,6 +1103,7 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 and not newly_pinged
                 and not removals
                 and not renamed
+                and not reinstated
             )
             if unchanged:
                 result.skipped += 1
@@ -1111,7 +1186,9 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
                 log.error("Discord thread delete error %s: %s", event_id, e)
         ids_to_remove.append(event_id)
 
-    # Clean up: delete threads for events that happened 24+ hours ago
+    # Clean up: delete threads for events that happened 24+ hours ago, and for
+    # cancelled raids once their notice window is over. A notice is only posted
+    # before the raid starts, so that window always ends first.
     for event_id, info in mapping.items():
         if event_id in ids_to_remove:
             continue
@@ -1120,22 +1197,28 @@ def execute_discord_sync(config: Config, discord: DiscordPoster) -> SyncResult:
             continue
         event_dt = _event_to_datetime(evt, timezone)
         hours_since = (now - event_dt).total_seconds() / 3600
-        if hours_since >= 24:
-            log.info(
-                "Discord cleanup: removing expired %s (%s, %.1f hours ago, thread=%s)",
-                event_id,
-                evt.title,
-                hours_since,
-                info.get("channel_id"),
-            )
-            ch_id = info.get("channel_id")
-            if ch_id:
-                try:
-                    discord.delete_thread(ch_id)
-                    result.deleted += 1
-                except Exception as e:
-                    log.error("Discord expired thread delete error: %s", e)
-            ids_to_remove.append(event_id)
+        notice_id = (info.get("cancelled") or {}).get("notice_id")
+        if notice_id and now >= _cancelled_thread_deadline(notice_id):
+            reason = "cancelled, notice window over"
+        elif hours_since >= EXPIRED_EVENT_HOURS:
+            reason = f"{hours_since:.1f} hours ago"
+        else:
+            continue
+        log.info(
+            "Discord cleanup: removing expired %s (%s, %s, thread=%s)",
+            event_id,
+            evt.title,
+            reason,
+            info.get("channel_id"),
+        )
+        ch_id = info.get("channel_id")
+        if ch_id:
+            try:
+                discord.delete_thread(ch_id)
+                result.deleted += 1
+            except Exception as e:
+                log.error("Discord expired thread delete error: %s", e)
+        ids_to_remove.append(event_id)
 
     for eid in ids_to_remove:
         mapping.pop(eid, None)
@@ -1554,7 +1637,7 @@ def _collect_syncable_events(
 def _collect_all_future_events(
     config: Config,
 ) -> tuple[dict[str, CalendarEvent], set[str], list[str], set[str]]:
-    """Return all future events for the guild, regardless of participation.
+    """Return every raid in the Discord window, regardless of participation.
 
     Returns ``(events, deleted_ids, errors, expired_ids)``. ``expired_ids``
     holds the ids of events that *were* parsed but fell out of the Discord
@@ -1622,14 +1705,13 @@ def _collect_all_future_events(
                 cutoff,
             )
             continue
-        # Only include events where a roster has been created (confirmed members with groups)
-        has_roster = any(
-            p.group > 0 and p.attendance == Attendance.CONFIRMED
-            for p in evt.participants
-        )
-        if not has_roster:
+        # Every planned raid gets a thread, roster or not — members can find
+        # it before the raid lead has built the groups. Cancelled raids stay in
+        # the set too: their thread is kept for the notice window rather than
+        # being deleted as "removed" (the sync loop never creates one for them).
+        if evt.event_type != EventType.RAID:
             log.debug(
-                "Discord collect: skipping %s (%s) — no confirmed roster",
+                "Discord collect: skipping %s (%s) — not a raid",
                 evt.event_id,
                 evt.title,
             )
@@ -1658,6 +1740,112 @@ def _is_tentative(evt: CalendarEvent, char_name: str) -> bool:
         if p.name == char_name:
             return p.attendance == Attendance.SIGNED
     return False
+
+
+def _notice_recipients(evt: CalendarEvent) -> set[str]:
+    """Everyone to tell when *evt* is cancelled or reinstated."""
+    return {p.name for p in evt.participants if p.attendance in _NOTICE_ATTENDANCE}
+
+
+def _cancelled_thread_deadline(notice_id: str) -> datetime:
+    """When the thread of a raid cancelled by *notice_id* is due for deletion."""
+    return snowflake_datetime(notice_id) + timedelta(hours=CANCELLED_THREAD_GRACE_HOURS)
+
+
+def _adopt_event_thread(
+    discord: DiscordPoster, evt: CalendarEvent, result: SyncResult
+) -> tuple[str | None, dict | None]:
+    """Adopt an existing thread for *evt*, collapsing duplicates to one.
+
+    Collects every thread matching the event in *any* language and keeps a
+    single deterministic survivor, deleting the rest — which both prevents and
+    cleans up cross-language / multi-client duplicates. The survivor is the
+    thread whose roster image carries the highest tool version (so the
+    up-to-date copy wins, not an old client's), tie-broken by lowest id: a
+    client-independent choice, so every client converges on the same thread.
+
+    Returns ``(channel_id, message_ids)``, or ``(None, None)`` if none exists.
+    """
+    matches = discord.find_event_threads(evt)
+    if not matches:
+        return None, None
+    survivor = max(
+        matches,
+        key=lambda t: (
+            _parse_version(t.get("version") or "0"),
+            -int(t["channel_id"]),
+        ),
+    )
+    for dup in matches:
+        if dup["channel_id"] == survivor["channel_id"]:
+            continue
+        try:
+            discord.delete_thread(dup["channel_id"])
+            result.deleted += 1
+            log.info(
+                "Discord: removed duplicate thread %s for %s",
+                dup["channel_id"],
+                evt.title,
+            )
+        except Exception as e:
+            log.warning(
+                "Discord: failed to delete duplicate %s: %s", dup["channel_id"], e
+            )
+    discord.ensure_unarchived(survivor["channel_id"])
+    log.info("Discord: adopted existing thread for %s", evt.title)
+    return survivor["channel_id"], {
+        "image_id": survivor.get("image_id"),
+        "hash": survivor.get("hash"),
+    }
+
+
+def _announce_cancellation(
+    discord: DiscordPoster,
+    channel_id: str,
+    evt: CalendarEvent,
+    raid_started: bool,
+) -> tuple[str | None, bool]:
+    """Make sure the thread of cancelled *evt* carries a cancellation notice.
+
+    Returns ``(notice_id, posted)``. A notice any client already posted is
+    reused — the newest marker decides, so a raid reinstated and then cancelled
+    again is announced afresh. A raid that has already started gets no notice:
+    there is nobody left to warn, and its thread expires like any other.
+
+    The scan raises on failure rather than reporting "no notice", which would
+    ping every signed member a second time.
+    """
+    from fgc_sync.i18n import t as _t
+
+    marker = discord.find_cancellation_marker(channel_id)
+    if marker and marker[0] == CANCELLATION_MARKER_CANCELLED:
+        return marker[1], False
+    if raid_started:
+        return None, False
+    notice_id = discord.post_notice(
+        channel_id, _t("discord.cancelled_notice"), _notice_recipients(evt)
+    )
+    return notice_id, True
+
+
+def _announce_reinstatement(
+    discord: DiscordPoster, channel_id: str, evt: CalendarEvent
+) -> bool:
+    """Tell the signed members that cancelled *evt* is back on.
+
+    Only when the thread's newest marker is still a cancellation — if another
+    client already announced the reinstatement, it isn't repeated. Returns
+    whether a notice was posted.
+    """
+    from fgc_sync.i18n import t as _t
+
+    marker = discord.find_cancellation_marker(channel_id)
+    if not marker or marker[0] != CANCELLATION_MARKER_CANCELLED:
+        return False
+    discord.post_notice(
+        channel_id, _t("discord.reinstated_notice"), _notice_recipients(evt)
+    )
+    return True
 
 
 def _sync_event_ics(

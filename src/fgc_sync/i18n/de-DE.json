@@ -244,7 +244,9 @@
     "thread_with_word": "mit",
     "ping_confirmed": "Bestätigt",
     "ping_newly_confirmed": "Neu bestätigt",
-    "calendar_attachment": "📅 **Zu meinem Kalender hinzufügen** — Datei herunterladen, um diesen Raid in deine Kalender-App zu importieren."
+    "calendar_attachment": "📅 **Zu meinem Kalender hinzufügen** — Datei herunterladen, um diesen Raid in deine Kalender-App zu importieren.",
+    "cancelled_notice": "❌ **Raid abgesagt** — dieser Thread wird in 24 Stunden gelöscht",
+    "reinstated_notice": "✅ **Der Raid findet doch statt**"
   },
   "updates": {
     "thread_name": "📋 FGC-Sync Changelog",

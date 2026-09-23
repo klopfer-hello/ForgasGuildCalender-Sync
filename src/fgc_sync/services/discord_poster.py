@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import UTC, datetime
 from datetime import date as _date
 
 import requests
@@ -57,6 +58,27 @@ _UPDATE_NOTICE_MARKER = "[FGC-SYNC-UPDATE]"
 def _version_filename_tag() -> str:
     """The ``_v<version>`` filename segment for this client (empty for dev)."""
     return f"_v{__version__}" if __version__ != "dev" else ""
+
+
+# Discord ids ("snowflakes") carry their creation time: milliseconds since this
+# epoch, in the bits above the low 22.
+_DISCORD_EPOCH_MS = 1420070400000
+_SNOWFLAKE_TIMESTAMP_SHIFT = 22
+
+
+def snowflake_datetime(snowflake: str) -> datetime:
+    """UTC creation time of a Discord message, read from its id.
+
+    Lets every client derive the same moment from a remote message — e.g. when
+    a cancellation notice was posted — without a local clock or mapping.
+    """
+    millis = (int(snowflake) >> _SNOWFLAKE_TIMESTAMP_SHIFT) + _DISCORD_EPOCH_MS
+    return datetime.fromtimestamp(millis / 1000, UTC)
+
+
+# Kinds returned by DiscordPoster.find_cancellation_marker.
+CANCELLATION_MARKER_CANCELLED = "cancelled"
+CANCELLATION_MARKER_REINSTATED = "reinstated"
 
 
 # Wildcard characters a guild member may embed in their server nickname to
@@ -965,6 +987,78 @@ class DiscordPoster:
         msg_id = data.get("id", "") if isinstance(data, dict) else ""
         log.info("Discord: pinged %d members (%s)", len(mentions), label)
         return {name: msg_id for name in resolved}
+
+    def post_notice(self, channel_id: str, label: str, names: set[str]) -> str:
+        """Post ``<label>: <mentions>`` to a thread and return its message id.
+
+        Unlike :meth:`ping_members` this always posts, even when no name
+        resolves to a Discord member: the notice itself is the record other
+        clients read (see :meth:`find_cancellation_marker`), and its id dates
+        the cancellation. Skipping it would leave nothing to deduplicate on.
+        """
+        user_ids = sorted(
+            {uid for uid in (self._find_member_id(n) for n in names) if uid}
+        )
+        content = f"{label}:" + "".join(f" <@{uid}>" for uid in user_ids)
+        data = self._request(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            json={"content": content, "allowed_mentions": {"users": user_ids}},
+        )
+        msg_id = data.get("id", "") if isinstance(data, dict) else ""
+        log.info(
+            "Discord: posted notice in %s, pinged %d member(s) (%s)",
+            channel_id,
+            len(user_ids),
+            label,
+        )
+        return msg_id
+
+    def find_cancellation_marker(self, channel_id: str) -> tuple[str, str] | None:
+        """The newest cancellation or reinstatement notice this bot posted.
+
+        Returns ``(kind, message_id)`` with *kind* one of
+        :data:`CANCELLATION_MARKER_CANCELLED` / :data:`CANCELLATION_MARKER_REINSTATED`,
+        or ``None`` when the thread holds neither. The newest wins, so a raid
+        cancelled, reinstated and cancelled again reads as cancelled — dated by
+        the latest notice. Every supported language's label is recognised, so a
+        language switch doesn't re-announce.
+
+        A failed listing **raises**: ``None`` tells the caller "nobody has been
+        told yet", and answering that on a failed request would ping every
+        signed member about the cancellation again.
+        """
+        bot_id = self._get_bot_user_id()
+        if not bot_id:
+            raise RuntimeError("bot user id unavailable")
+        messages = self._request(
+            "GET",
+            f"/channels/{channel_id}/messages",
+            params={"limit": _PING_HISTORY_SCAN_LIMIT},
+        )
+        prefixes = (
+            *(
+                (f"{label}:", CANCELLATION_MARKER_CANCELLED)
+                for label in i18n.t_all("discord.cancelled_notice")
+            ),
+            *(
+                (f"{label}:", CANCELLATION_MARKER_REINSTATED)
+                for label in i18n.t_all("discord.reinstated_notice")
+            ),
+        )
+        newest: tuple[str, str] | None = None
+        for msg in messages or []:
+            if msg.get("author", {}).get("id") != bot_id:
+                continue
+            msg_id = msg.get("id")
+            content = msg.get("content", "")
+            for prefix, kind in prefixes:
+                if msg_id and content.startswith(prefix):
+                    # Compare ids rather than trusting the listing order.
+                    if newest is None or int(msg_id) > int(newest[1]):
+                        newest = (kind, msg_id)
+                    break
+        return newest
 
     def remove_mentions(
         self,
