@@ -1153,16 +1153,16 @@ class DiscordPoster:
         can see but this scan cannot would be deleted right after we posted a
         duplicate, which is the very loop this exists to break.
 
-        Returns ``(message_id, week_key, content_hash)`` or ``None``.
+        Returns ``(message_id, week_key, content_hash)``, or ``None`` only when
+        the listing succeeded and holds no weekly reply. A failed listing
+        raises: callers read ``None`` as "post a new reply", so degrading an
+        error into it would post a duplicate on every failed request.
         """
-        try:
-            messages = self._request(
-                "GET",
-                f"/channels/{channel_id}/messages",
-                params={"limit": _PING_HISTORY_SCAN_LIMIT},
-            )
-        except requests.HTTPError:
-            return None
+        messages = self._request(
+            "GET",
+            f"/channels/{channel_id}/messages",
+            params={"limit": _PING_HISTORY_SCAN_LIMIT},
+        )
 
         exact: tuple[str, str, str] | None = None
         oldest: tuple[str, str, str] | None = None

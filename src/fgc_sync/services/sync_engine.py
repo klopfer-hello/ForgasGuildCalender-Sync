@@ -1262,12 +1262,17 @@ def compute_weekly_sync_plan(
     # Mirror execute_weekly_sync: the reply is whatever the thread scan finds,
     # not what our mapping remembers, so the preview doesn't announce a CREATE
     # for a reply the real sync would adopt from another client.
-    reply = (
-        discord.find_weekly_reply(mapping["channel_id"], nxt_week_key)
-        if mapping.get("channel_id")
-        else None
-    )
-    if not reply:
+    reply = None
+    scan_failed = False
+    if mapping.get("channel_id"):
+        try:
+            reply = discord.find_weekly_reply(mapping["channel_id"], nxt_week_key)
+        except Exception as e:
+            # The real sync aborts on this; a preview reports nothing rather
+            # than a CREATE it can't vouch for (cf. _plan_event_missing).
+            log.warning("Weekly overview plan: reply scan failed: %s", e)
+            scan_failed = True
+    if not reply and not scan_failed:
         plan.entries.append(
             SyncPlanEntry(
                 SyncAction.CREATE,
@@ -1280,9 +1285,11 @@ def compute_weekly_sync_plan(
             )
         )
     elif (
-        reply[2] != nxt_hash or reply[1] != nxt_week_key
-    ) and not _would_blank_remote_week(
-        discord, mapping.get("channel_id"), reply[0], nxt_hash
+        reply
+        and (reply[2] != nxt_hash or reply[1] != nxt_week_key)
+        and not _would_blank_remote_week(
+            discord, mapping.get("channel_id"), reply[0], nxt_hash
+        )
     ):
         plan.entries.append(
             SyncPlanEntry(

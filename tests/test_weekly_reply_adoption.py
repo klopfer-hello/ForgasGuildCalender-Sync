@@ -128,10 +128,12 @@ class TestFindWeeklyReply:
             "limit": _PING_HISTORY_SCAN_LIMIT
         }
 
-    def test_failed_listing_returns_none(self, poster):
-        """Best-effort: a failed scan must not raise into the weekly sync."""
+    def test_failed_listing_raises_instead_of_reporting_no_reply(self, poster):
+        """``None`` means "post a new reply". A failed request must not say
+        that, or every 429/5xx on this GET would post a duplicate."""
         poster._request.side_effect = requests.HTTPError("boom")
-        assert poster.find_weekly_reply(_THREAD_ID, "2026-W40") is None
+        with pytest.raises(requests.HTTPError):
+            poster.find_weekly_reply(_THREAD_ID, "2026-W40")
 
 
 # --- Whole-sync behaviour ---
@@ -296,3 +298,29 @@ class TestSyncAdoptsInsteadOfDuplicating:
             == other.get("discord_weekly_mapping")["next_message_id"]
             == _OLDER_REPLY
         )
+
+
+class TestFailedScan:
+    def test_sync_aborts_instead_of_posting_a_duplicate(self, config, patched_collect):
+        """A failed scan tells us nothing about whether a reply exists; the
+        cycle must stop rather than guess "none" and post."""
+        discord = _discord(reply=None)
+        discord.find_weekly_reply.side_effect = requests.HTTPError("429")
+
+        result = sync_engine.execute_weekly_sync(config, discord)
+
+        discord.post_weekly_image.assert_not_called()
+        discord.cleanup_weekly_thread_orphans.assert_not_called()
+        assert result.errors
+
+    def test_plan_reports_nothing_rather_than_a_create(self, config, patched_collect):
+        """The dry-run must not abort, and must not promise a CREATE the real
+        sync would never perform."""
+        config.set("discord_weekly_mapping", {"channel_id": _THREAD_ID})
+        discord = _discord(reply=None)
+        discord.find_weekly_reply.side_effect = requests.HTTPError("429")
+
+        plan = sync_engine.compute_weekly_sync_plan(config, discord)
+
+        next_week = [e for e in plan.entries if e.event_type == "Overview (next week)"]
+        assert next_week == []
